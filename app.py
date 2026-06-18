@@ -1,349 +1,1140 @@
 """
-⚡ 변압기 화재 위험도 예측 대시보드
-TransFireRisk | 날씨 빅데이터 콘테스트 2026
+TransFireRisk IMS v7.0
+변압기 화재 위험 통합관리 시스템 | Transformer Fire Risk IMS
+==============================================
+모델 v3.0 (ensemble_v3.pkl):
+  - XGB + RandomForest + LogisticRegression 소프트 보팅
+  - 28개 피처 | Ensemble: XGB + RF + LR, 28 features
+  - 평가 지표: PR-AUC / F2(β=2) / MCC  [F1 대신 불균형 특화]
+  - 검증 ROC-AUC=0.640, PR-AUC=0.122, Recall@0.20=0.562
 """
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import joblib
-import os
+from plotly.subplots import make_subplots
+import joblib, os, requests, math
+from datetime import datetime, date, timedelta
+from sklearn.metrics import (roc_auc_score, recall_score, precision_score,
+                             f1_score, roc_curve, fbeta_score,
+                             average_precision_score, matthews_corrcoef,
+                             precision_recall_curve)
+
+try:
+    from openai import OpenAI
+    _OPENAI_PKG = True
+except ImportError:
+    _OPENAI_PKG = False
+
+# ══════════════════════════════════════════════════════════════
+#  다국어 지원 (i18n)
+# ══════════════════════════════════════════════════════════════
+_TRANS: dict = {
+    # 탭
+    'tab_dashboard': {'ko':'🏠 종합 현황판',    'en':'🏠 Dashboard'},
+    'tab_region':    {'ko':'🗺️ 지역 상세',      'en':'🗺️ Regional Detail'},
+    'tab_forecast':  {'ko':'📡 기상 예보',       'en':'📡 Weather Forecast'},
+    'tab_risk':      {'ko':'🔬 복합위험 분석',   'en':'🔬 Risk Analysis'},
+    'tab_insp':      {'ko':'📋 점검 관리',       'en':'📋 Inspection Mgmt'},
+    'tab_model':     {'ko':'📊 이력·모델',       'en':'📊 History & Model'},
+    # 사이드바
+    'sidebar_title': {'ko':'경보 현황',          'en':'Alert Status'},
+    'p1_label':      {'ko':'P1 즉시 점검',       'en':'P1 Immediate'},
+    'p2_label':      {'ko':'P2 주의 지역',       'en':'P2 Caution'},
+    'normal_label':  {'ko':'전 지역 정상',        'en':'All regions normal'},
+    'view_month':    {'ko':'현황 기준 월',        'en':'Reference Month'},
+    'risk_legend':   {'ko':'위험도 기준 (발화 확률)',    'en':'Risk Thresholds (Fire Prob.)'},
+    'grade_vh':      {'ko':'매우높음 ≥ 40%',     'en':'Very High ≥ 40%'},
+    'grade_h':       {'ko':'높음 25~40%',        'en':'High 25–40%'},
+    'grade_m':       {'ko':'보통 15~25%',        'en':'Moderate 15–25%'},
+    'grade_l':       {'ko':'낮음 < 15%',         'en':'Low < 15%'},
+    # 현황판
+    'dashboard_title': {'ko':'전국 변압기 화재 위험 현황',   'en':'National Transformer Fire Risk Status'},
+    'data_basis':    {'ko':'2024년 기상 기반 모델 예측',     'en':'Based on 2024 weather data'},
+    'avg_risk':      {'ko':'전국 평균 위험도',    'en':'National Avg Risk'},
+    'p1_count':      {'ko':'P1 즉시 점검',       'en':'P1 Immediate'},
+    'p2_count':      {'ko':'P2 주의 지역',       'en':'P2 Caution'},
+    'est_fire':      {'ko':'고위험 예상 화재',    'en':'Est. High-Risk Fires'},
+    'top_region':    {'ko':'최고 위험 지역',      'en':'Highest Risk Region'},
+    'region_grid':   {'ko':'전국 발화 확률 현황', 'en':'National Fire Probability Map'},
+    'risk_ranking':  {'ko':'종합위험 순위',       'en':'Risk Ranking'},
+    'ml_vs_tfri':    {'ko':'ML 발화확률 vs TFRI 비교', 'en':'ML Prob. vs TFRI Comparison'},
+    'weather_factors':{'ko':'현재 기상 위험 요인', 'en':'Current Weather Risk Factors'},
+    # AI 브리핑
+    'ai_briefing':   {'ko':'📋 AI 운영 브리핑',  'en':'📋 AI Operational Briefing'},
+    'ai_gen':        {'ko':'🤖 브리핑 생성',     'en':'🤖 Generate Briefing'},
+    'ai_refresh':    {'ko':'🔄 새로 생성',       'en':'🔄 Refresh'},
+    'ai_no_key':     {'ko':'(사이드바에 GPT API Key를 입력하면 AI 브리핑이 자동 생성됩니다)',
+                      'en':'(Enter GPT API Key in sidebar to auto-generate AI briefing)'},
+    # 지역 상세
+    'region_title':  {'ko':'지역 상세 조회',      'en':'Regional Detail'},
+    'region_sel':    {'ko':'지역',               'en':'Region'},
+    'month_sel':     {'ko':'월',                 'en':'Month'},
+    # 점검 관리
+    'insp_title':    {'ko':'점검 관리',           'en':'Inspection Management'},
+    'insp_dl':       {'ko':'점검 계획표 CSV 다운로드', 'en':'Download Inspection Plan CSV'},
+    # 모델 정보
+    'model_title':   {'ko':'이력 분석 및 모델 정보', 'en':'History & Model Info'},
+    'metric_note':   {
+        'ko': '**왜 F1이 아닌 F2·MCC·PR-AUC를 사용하나요?**\n\n'
+              '- 데이터 불균형(발화율 7.8%)에서 F1은 정밀도·재현율 동등 가중 → 탐지보다 오탐 감소에 유리\n'
+              '- **F2 (β=2)**: 재현율을 2배 가중 — 화재를 놓치는 비용 > 오탐 비용\n'
+              '- **MCC**: -1~+1 범위, 불균형 무관 가장 신뢰할 수 있는 단일 지표\n'
+              '- **PR-AUC**: 임계값 없이 전체 Precision-Recall 성능 요약',
+        'en': '**Why F2 / MCC / PR-AUC instead of F1?**\n\n'
+              '- F1 equally weights precision & recall — penalizes false alarms equally\n'
+              '- **F2 (β=2)**: Recall weighted 2× — missing a fire costs more than false alarm\n'
+              '- **MCC**: Range −1 to +1, most robust metric for skewed class distributions\n'
+              '- **PR-AUC**: Summarises precision-recall without threshold selection',
+    },
+    'model_compare': {'ko':'모델 성능 비교 (v1 기준 vs v3 개선)', 'en':'Model Performance: v1 Baseline vs v3 Improved'},
+    'fi_title':      {'ko':'피처 중요도 (상위 15개)',  'en':'Feature Importance (Top 15)'},
+    'roc_title':     {'ko':'ROC Curve (검증셋 2023~2024)', 'en':'ROC Curve (Validation 2023–2024)'},
+}
+
+def T(key: str) -> str:
+    """현재 언어 기준으로 번역된 문자열 반환"""
+    entry = _TRANS.get(key, {})
+    lang_key = 'en' if st.session_state.get('lang','한국어') == 'English' else 'ko'
+    return entry.get(lang_key, entry.get('ko', key))
+
+# ══════════════════════════════════════════════════════════════
+#  AI 운영 브리핑
+# ══════════════════════════════════════════════════════════════
+def get_ai_briefing(baseline, month, year, api_key: str) -> str | None:
+    """전국 현황을 GPT로 요약해 운영 브리핑 생성"""
+    if not _OPENAI_PKG or not api_key:
+        return None
+    lang_key = 'en' if st.session_state.get('lang','한국어') == 'English' else 'ko'
+    top3  = baseline.head(3)
+    vh    = baseline[baseline['등급']=='매우높음']['시도'].tolist()
+    hi    = baseline[baseline['등급']=='높음']['시도'].tolist()
+    avg   = baseline['종합위험'].mean()
+    top3_str = ', '.join(f"{r['시도']} {r['종합위험']:.0f}%" for _,r in top3.iterrows())
+
+    if lang_key == 'en':
+        prompt = f"""You are a power facility fire risk analyst (KEPCO).
+Write a concise operational briefing (≤120 words) for {datetime(year,month,1).strftime('%B %Y')}.
+
+Data:
+- National avg combined risk: {avg:.1f}%
+- P1 Immediate inspection: {', '.join(vh) if vh else 'None'}
+- P2 Caution: {', '.join(hi) if hi else 'None'}
+- Top 3 regions: {top3_str}
+
+Format: 3 short paragraphs — ① overall risk level, ② priority regions & reason, ③ top 2 action items."""
+    else:
+        prompt = f"""당신은 KEPCO 전력설비 화재 위험 분석 전문가입니다.
+{year}년 {month}월 운영 브리핑을 120자 이내로 작성하세요.
+
+데이터:
+- 전국 평균 종합위험도: {avg:.1f}%
+- P1 즉시 점검 필요: {', '.join(vh) if vh else '없음'}
+- P2 주의: {', '.join(hi) if hi else '없음'}
+- 상위 3개 지역: {top3_str}
+
+3개 단락으로 작성: ① 전반적 위험 수준, ② 우선 대응 지역과 이유, ③ 핵심 조치 2가지."""
+
+    try:
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"user","content":prompt}],
+            max_tokens=250, temperature=0.3,
+        )
+        return resp.choices[0].message.content
+    except Exception:
+        return None
+
+def rule_briefing(baseline, month) -> str:
+    """GPT 없을 때 규칙 기반 요약"""
+    lang_key = 'en' if st.session_state.get('lang','한국어') == 'English' else 'ko'
+    vh = baseline[baseline['등급']=='매우높음']['시도'].tolist()
+    hi = baseline[baseline['등급']=='높음']['시도'].tolist()
+    avg = baseline['종합위험'].mean()
+    if lang_key == 'en':
+        level = "HIGH" if avg>=30 else "MODERATE" if avg>=20 else "LOW"
+        parts = [f"**{datetime(2026,month,1).strftime('%B')} Risk Level: {level}** (avg {avg:.1f}%)."]
+        if vh: parts.append(f"Immediate inspection required: **{', '.join(vh)}**.")
+        if hi: parts.append(f"Monitor closely: {', '.join(hi)}.")
+        if not vh and not hi: parts.append("No high-risk regions detected.")
+        parts.append("Recommendation: Inspect cooling systems & insulation on high-load transformers.")
+    else:
+        level = "높음" if avg>=30 else "보통" if avg>=20 else "낮음"
+        parts = [f"**{month}월 전국 위험 수준: {level}** (평균 {avg:.1f}%)."]
+        if vh: parts.append(f"즉시 점검 권고: **{', '.join(vh)}**.")
+        if hi: parts.append(f"주의 지역: {', '.join(hi)}.")
+        if not vh and not hi: parts.append("고위험 지역 없음.")
+        parts.append("권고: 고부하 변압기 냉각 설비 및 절연 상태 점검.")
+    return "  \n".join(parts)
 
 st.set_page_config(
-    page_title="TransFireRisk — 변압기 화재 위험도 예측",
+    page_title="TransFireRisk IMS",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+st.markdown("""<style>
+[data-testid="stMetricValue"]{font-size:1.55rem!important;font-weight:700!important}
+[data-testid="stMetricLabel"]{font-size:0.8rem!important;color:#555!important}
+.ims-header{background:linear-gradient(135deg,#0D1B4B 0%,#1565C0 100%);
+  padding:18px 28px;border-radius:10px;margin-bottom:18px;
+  display:flex;justify-content:space-between;align-items:center}
+.alert-p1{background:#FFEBEE;border-left:5px solid #F44336;
+  border-radius:6px;padding:10px 16px;margin:3px 0;color:#C62828;font-weight:600}
+.alert-p2{background:#FFF3E0;border-left:5px solid #FF9800;
+  border-radius:6px;padding:10px 16px;margin:3px 0;color:#E65100;font-weight:600}
+.method-box{background:#E8EAF6;border-radius:8px;padding:14px;
+  border-left:4px solid #3F51B5;margin:8px 0;font-size:0.87rem}
+.ai-box{background:#F0F7FF;border-radius:10px;padding:16px;
+  border-left:4px solid #1565C0;margin-top:10px}
+.perf-delta-good{color:#2E7D32;font-weight:700}
+.perf-delta-bad{color:#C62828;font-weight:700}
+</style>""", unsafe_allow_html=True)
 
+# ── 경로·날짜 ──────────────────────────────────────────────────
 BASE      = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE, "model")
+TODAY     = date.today()
+NOW       = datetime.now()
+CUR_MONTH = TODAY.month
+CUR_YEAR  = TODAY.year
+MONTH_KR  = {i: f"{i}월" for i in range(1, 13)}
 
-# ── 데이터 / 모델 로드 ────────────────────────────────────────
-@st.cache_data
-def load_data():
-    df = pd.read_csv(os.path.join(MODEL_DIR, "full_predictions.csv"))
-    fi = pd.read_csv(os.path.join(MODEL_DIR, "feature_importance.csv"), index_col=0, header=0)
-    fi.columns = ['중요도']
-    return df, fi.sort_values('중요도', ascending=False)
+# ── 상수 ──────────────────────────────────────────────────────
+SIDO_LIST = ['서울','부산','대구','인천','광주','대전','울산','세종',
+             '경기','강원','충북','충남','전북','전남','경북','경남','제주']
+SIDO_NX_NY = {
+    '서울':(60,127),'부산':(98,76),'대구':(89,90),'인천':(55,124),
+    '광주':(58,74), '대전':(67,100),'울산':(102,84),'세종':(66,103),
+    '경기':(60,120),'강원':(73,134),'충북':(69,107),'충남':(68,100),
+    '전북':(63,89), '전남':(51,67), '경북':(89,106),'경남':(91,77),'제주':(52,38),
+}
+SIDO_COORDS = {
+    '서울':(37.5665,126.9780),'부산':(35.1796,129.0756),
+    '대구':(35.8714,128.6014),'인천':(37.4563,126.7052),
+    '광주':(35.1595,126.8526),'대전':(36.3504,127.3845),
+    '울산':(35.5384,129.3114),'세종':(36.4800,127.2890),
+    '경기':(37.2636,127.0286),'강원':(37.8813,127.7298),
+    '충북':(36.6424,127.4890),'충남':(36.6588,126.6728),
+    '전북':(35.8242,127.1480),'전남':(34.8161,126.4630),
+    '경북':(36.5760,128.5056),'경남':(35.2373,128.6925),
+    '제주':(33.4996,126.5312),
+}
+RISK_COLOR = {'낮음':'#4CAF50','보통':'#FFC107','높음':'#FF9800','매우높음':'#F44336'}
+RISK_BG    = {'낮음':'#E8F5E9','보통':'#FFFDE7','높음':'#FFF3E0','매우높음':'#FFEBEE'}
+RISK_TEXT  = {'낮음':'#2E7D32','보통':'#F57F17','높음':'#E65100','매우높음':'#C62828'}
+RISK_EMOJI = {'낮음':'🟢','보통':'🟡','높음':'🟠','매우높음':'🔴'}
+SEASON_CODE= {12:4,1:4,2:4,3:1,4:1,5:1,6:2,7:2,8:2,9:3,10:3,11:3}
 
-@st.cache_resource
-def load_model():
-    return joblib.load(os.path.join(MODEL_DIR, "xgb_transformer_fire.pkl"))
+# ── 위험도 등급 (확률 기반 v3.0) ─────────────────────────────
+#   낮음<15% / 보통 15-25% / 높음 25-40% / 매우높음≥40%
+def risk_grade(pct: float) -> str:
+    if pct < 15:  return "낮음"
+    elif pct < 25: return "보통"
+    elif pct < 40: return "높음"
+    else:          return "매우높음"
 
-df, fi = load_data()
-model  = load_model()
-
-SIDO_LIST   = sorted(df['시도'].unique())
-RISK_COLOR  = {'낮음':'#4CAF50','보통':'#FFC107','높음':'#FF9800','매우높음':'#F44336'}
-SEASON_CODE = {12:4,1:4,2:4, 3:1,4:1,5:1, 6:2,7:2,8:2, 9:3,10:3,11:3}
-
-def risk_grade(v):
-    if   v < 0.3: return "낮음"
-    elif v < 0.7: return "보통"
-    elif v < 1.2: return "높음"
-    else:         return "매우높음"
-
-FEATURES = [
+# ── 피처 엔지니어링 (모델 학습과 동일) ───────────────────────
+TARGET = '변압기화재건수'
+ORIG_FEATURES = [
     '월최고기온','월평균기온','월최저기온','월평균습도','월강수합계','월최대풍속',
     '월평균일교차','강수일수','월전3일평균기온','월전7일강수합계','월연속고온일수',
     '월','계절코드','시도코드','전년전기화재건수','전년변압기화재건수',
 ]
+NEW_FEATURES = ORIG_FEATURES + [
+    '열지수','열습도스트레스','강수고온지수','폭염습도',
+    '과부하스트레스','강수습도','기온편차','습도편차','강수편차',
+    '지역발화율','월_sin','월_cos',
+]
+
+def engineer_features(df_in: pd.DataFrame, ref_df: pd.DataFrame) -> pd.DataFrame:
+    d = df_in.copy()
+    d['열지수']      = d['월최고기온'] * d['월평균습도'] / 100.0
+    d['열습도스트레스'] = np.maximum(0, d['월최고기온']-30) * np.maximum(0,(d['월평균습도']-60)/40)
+    d['강수고온지수']  = d['월강수합계'] * np.maximum(0, d['월평균기온']-15) / 100.0
+    d['폭염습도']     = d['월연속고온일수'] * d['월평균습도'] / 100.0
+    d['과부하스트레스'] = np.maximum(0, d['월최고기온']-33) ** 2
+    d['강수습도']     = d['강수일수'] * d['월평균습도'] / 100.0
+
+    clim = ref_df.groupby(['시도코드','월'])[
+        ['월평균기온','월평균습도','월강수합계']].mean().reset_index()
+    clim.columns = ['시도코드','월','clim_T','clim_RH','clim_Rain']
+    d = d.merge(clim, on=['시도코드','월'], how='left')
+    d['기온편차'] = d['월평균기온'] - d['clim_T'].fillna(d['월평균기온'].mean())
+    d['습도편차'] = d['월평균습도'] - d['clim_RH'].fillna(d['월평균습도'].mean())
+    d['강수편차'] = d['월강수합계'] - d['clim_Rain'].fillna(d['월강수합계'].mean())
+    d.drop(columns=['clim_T','clim_RH','clim_Rain'], inplace=True, errors='ignore')
+
+    fire_rate = ref_df.groupby('시도코드')[TARGET].apply(lambda x:(x>0).mean())
+    d['지역발화율'] = d['시도코드'].map(fire_rate).fillna(fire_rate.mean())
+    d['월_sin'] = np.sin(2*np.pi*d['월']/12)
+    d['월_cos'] = np.cos(2*np.pi*d['월']/12)
+    return d
+
+# ── 데이터 로드 ───────────────────────────────────────────────
+@st.cache_data
+def load_data():
+    df = pd.read_csv(os.path.join(MODEL_DIR, "full_predictions_final.csv"))
+    ref = pd.read_csv(os.path.join(MODEL_DIR, "model_input.csv"))
+    ref = ref[ref['연도'] <= 2022]          # 학습셋만 참조
+    return df, ref
+
+@st.cache_resource
+def load_bundle():
+    path = os.path.join(MODEL_DIR, "ensemble_v3.pkl")
+    return joblib.load(path)
+
+df, ref_df = load_data()
+bundle     = load_bundle()
+
+# ── 앙상블 예측 함수 ─────────────────────────────────────────
+def predict_prob(row_dict: dict) -> float:
+    """단일 행 딕셔너리 → 발화 확률(%) 반환"""
+    row_df = pd.DataFrame([row_dict])
+    row_eng = engineer_features(row_df, ref_df)
+    X = row_eng[NEW_FEATURES].values
+    X_s = bundle['scaler_lr'].transform(X)
+    w = bundle['weights']
+    prob = (w[0]*bundle['model_xgb'].predict_proba(X)[:,1] +
+            w[1]*bundle['model_rf'].predict_proba(X)[:,1]  +
+            w[2]*bundle['model_lr'].predict_proba(X_s)[:,1])
+    return round(float(prob[0]) * 100, 1)
+
+def row_from_weather(sido, month, maxT, avgT, minT, humid, rain,
+                     wind, trange, rdays):
+    elec_h = df[df['시도']==sido]['전년전기화재건수'].mean()
+    tr_h   = df[df['시도']==sido]['전년변압기화재건수'].mean()
+    return {
+        '월최고기온':maxT,'월평균기온':avgT,'월최저기온':minT,
+        '월평균습도':humid,'월강수합계':rain,'월최대풍속':wind,
+        '월평균일교차':trange,'강수일수':rdays,
+        '월전3일평균기온':avgT*0.95,'월전7일강수합계':rain*0.23,
+        '월연속고온일수':max(0,(maxT-33)*2) if maxT>33 else 0,
+        '월':month,'계절코드':SEASON_CODE.get(month,1),
+        '시도코드':SIDO_LIST.index(sido),
+        '전년전기화재건수':elec_h,'전년변압기화재건수':tr_h,
+        TARGET:0,
+    }
+
+# ── TFRI 복합위험지수 ─────────────────────────────────────────
+def compute_whi(maxT, humid, rain, trange):
+    theta = max(0.0,(maxT-30)/10)
+    phi   = max(0.0,(humid-70)/30)**1.5
+    R     = min(math.log1p(rain/50)/math.log1p(200/50),1.0)
+    fat   = max(0.0,1.0-trange/15)
+    return round(min((0.32*theta+0.28*phi+0.25*R+0.15*fat)*100,100),1)
+
+def compute_ida(avgT, maxT, humid):
+    theta_hs = avgT+50.0+30.0*(maxT/40.0)**2
+    try:   V = math.exp(15000/(273+98)-15000/(273+theta_hs))
+    except: V = 1.0
+    km = 1.0+2.0*max(0.0,(humid-70)/30)**2
+    return round(min(V*km*20.0,100.0),1)
+
+def compute_hri(sido, month):
+    hist    = df[(df['시도']==sido)&(df['월']==month)]['변압기화재건수'].sum()
+    nat_avg = df[df['월']==month].groupby('시도')['변압기화재건수'].sum().mean()
+    n_yrs   = df['연도'].nunique()
+    return round(min((hist/n_yrs)/(nat_avg+1e-6)*50,100),1)
+
+def compute_tfri(sido, month, maxT, avgT, humid, rain, trange):
+    whi = compute_whi(maxT, humid, rain, trange)
+    ida = compute_ida(avgT, maxT, humid)
+    hri = compute_hri(sido, month)
+    return round(0.45*whi+0.35*ida+0.20*hri,1), whi, ida, hri
+
+# ── 현황 기준 데이터 ─────────────────────────────────────────
+def get_baseline(month: int):
+    base = df[(df['연도']==2024)&(df['월']==month)].copy()
+    if len(base) < 17:
+        base = df[df['월']==month].groupby('시도').agg(
+            발화확률=('발화확률','mean'), 변압기화재건수=('변압기화재건수','mean'),
+            월최고기온=('월최고기온','mean'), 월평균기온=('월평균기온','mean'),
+            월평균습도=('월평균습도','mean'), 월강수합계=('월강수합계','mean'),
+            월평균일교차=('월평균일교차','mean'),
+        ).reset_index()
+    base['등급'] = base['발화확률'].apply(risk_grade)
+    tfri_rows = []
+    for _, r in base.iterrows():
+        t,wh,id_,hr = compute_tfri(
+            r['시도'], month, r.get('월최고기온',20), r.get('월평균기온',15),
+            r.get('월평균습도',70), r.get('월강수합계',50), r.get('월평균일교차',8))
+        tfri_rows.append({'시도':r['시도'],'TFRI':t,'WHI':wh,'IDA':id_,'HRI':hr})
+    tfri_df = pd.DataFrame(tfri_rows)
+    base = base.merge(tfri_df, on='시도', how='left')
+    base['종합위험'] = ((base['발화확률'] + base['TFRI']) / 2).round(1)
+    return base.sort_values('종합위험', ascending=False).reset_index(drop=True)
+
+# ── KMA / Open-Meteo 예보 ─────────────────────────────────────
+def _kma_base_time():
+    h = NOW.hour; avail=[2,5,8,11,14,17,20,23]; past=[x for x in avail if x+1<=h]
+    if not past: return (NOW-timedelta(days=1)).strftime('%Y%m%d'),'2300'
+    return NOW.strftime('%Y%m%d'), f'{past[-1]:02d}00'
+
+def _parse_pcp(v):
+    s = str(v)
+    if s in ('강수없음','','nan'): return 0.0
+    if '미만' in s: return 0.5
+    if '~' in s:
+        try: a,b=s.replace('mm','').split('~'); return (float(a)+float(b))/2
+        except: return 1.0
+    try: return float(s.replace('mm','').strip())
+    except: return 0.0
+
+@st.cache_data(ttl=1800)
+def fetch_kma(sido, api_key):
+    if not api_key: return None,"KMA API KEY 없음"
+    nx,ny = SIDO_NX_NY.get(sido,(60,127))
+    bd,bt = _kma_base_time()
+    try:
+        r = requests.get(
+            "http://apis.data.go.kr/1360000/VilageFcstInfoService2.0/getVilageFcst",
+            params=dict(serviceKey=api_key,pageNo=1,numOfRows=1000,dataType='JSON',
+                        base_date=bd,base_time=bt,nx=nx,ny=ny), timeout=12)
+        body = r.json().get('response',{}).get('body',{})
+        if not body.get('totalCount',0): return None,f"데이터 없음({bd} {bt})"
+        raw = pd.DataFrame(body['items']['item'])
+        raw['날짜'] = pd.to_datetime(raw['fcstDate'])
+        result = []
+        for d_,grp in raw.groupby('날짜'):
+            def g(cat): return pd.to_numeric(grp[grp['category']==cat]['fcstValue'],errors='coerce').dropna()
+            t=g('TMP'); pcp=grp[grp['category']=='PCP']['fcstValue'].apply(_parse_pcp).sum()
+            reh=g('REH'); wsd=g('WSD')
+            tx=g('TMX'); tn=g('TMN')
+            result.append({'날짜':d_,
+                '최고기온':float(tx.iloc[0]) if len(tx) else (t.max() if len(t) else 20),
+                '최저기온':float(tn.iloc[0]) if len(tn) else (t.min() if len(t) else 10),
+                '평균기온':t.mean() if len(t) else 15,
+                '강수량':pcp,'최대풍속':wsd.max() if len(wsd) else 0,
+                '평균습도':reh.mean() if len(reh) else 70,'출처':'기상청(KMA)'})
+        fc=pd.DataFrame(result); fc['일교차']=fc['최고기온']-fc['최저기온']
+        return fc.head(3),None
+    except Exception as e: return None,str(e)
+
+@st.cache_data(ttl=3600)
+def fetch_openmeteo(sido):
+    lat,lon=SIDO_COORDS.get(sido,(37.5665,126.9780))
+    try:
+        r=requests.get("https://api.open-meteo.com/v1/forecast",
+            params=dict(latitude=lat,longitude=lon,
+                daily="temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
+                      "precipitation_sum,wind_speed_10m_max",
+                hourly="relative_humidity_2m",forecast_days=14,timezone="Asia/Seoul"),
+            timeout=10); r.raise_for_status()
+        data=r.json()
+        daily=pd.DataFrame({'날짜':pd.to_datetime(data['daily']['time']),
+            '최고기온':data['daily']['temperature_2m_max'],
+            '최저기온':data['daily']['temperature_2m_min'],
+            '평균기온':data['daily']['temperature_2m_mean'],
+            '강수량':data['daily']['precipitation_sum'],
+            '최대풍속':data['daily']['wind_speed_10m_max']})
+        daily['일교차']=daily['최고기온']-daily['최저기온']
+        hr=pd.DataFrame({'dt':pd.to_datetime(data['hourly']['time']),
+                         'hum':data['hourly']['relative_humidity_2m']})
+        hr['date']=hr['dt'].dt.date
+        dh=hr.groupby('date')['hum'].mean().reset_index()
+        dh['날짜']=pd.to_datetime(dh['date'])
+        daily=daily.merge(dh[['날짜','hum']],on='날짜',how='left')
+        daily.rename(columns={'hum':'평균습도'},inplace=True)
+        daily['평균습도']=daily['평균습도'].fillna(70)
+        daily['출처']='Open-Meteo'
+        return daily,None
+    except Exception as e: return None,str(e)
+
+def fetch_forecast(sido, kma_key=""):
+    if kma_key:
+        kdf,kerr=fetch_kma(sido,kma_key)
+        if kdf is not None and len(kdf):
+            om,_=fetch_openmeteo(sido)
+            if om is not None:
+                extra=om[om['날짜']>kdf['날짜'].max()].copy()
+                extra['출처']='Open-Meteo'
+                return pd.concat([kdf,extra],ignore_index=True),None,"기상청(3일)+Open-Meteo(4~14일)"
+            return kdf,None,"기상청(KMA)"
+    om,err=fetch_openmeteo(sido)
+    return om,err,"Open-Meteo"
+
+def compute_forecast_risk(fc_df, sido):
+    """14일 예보 → 일별 발화확률(%) 및 TFRI"""
+    scale=30/max(len(fc_df),1)
+    rows=[]
+    for i in range(len(fc_df)):
+        row=fc_df.iloc[i]
+        w7=fc_df.iloc[max(0,i-6):i+1]; w3=fc_df.iloc[max(0,i-2):i+1]
+        rdict=row_from_weather(
+            sido, row['날짜'].month,
+            fc_df['최고기온'].max(), fc_df['평균기온'].mean(),
+            fc_df['최저기온'].min(), fc_df['평균습도'].mean(),
+            fc_df['강수량'].sum()*scale, fc_df['최대풍속'].max(),
+            fc_df['일교차'].mean(), int((fc_df['강수량']>1).sum()*scale))
+        rdict['월전3일평균기온']=w3['평균기온'].mean()
+        rdict['월전7일강수합계']=w7['강수량'].sum()
+        rdict['월연속고온일수']=max(0,(row['최고기온']-33)*2) if row['최고기온']>33 else 0
+        rdict['월']=row['날짜'].month
+        rdict['계절코드']=SEASON_CODE.get(row['날짜'].month,1)
+        ml_prob=predict_prob(rdict)
+        tfri_v,whi,ida,hri=compute_tfri(sido,row['날짜'].month,
+            row['최고기온'],row['평균기온'],row['평균습도'],row['강수량'],row['일교차'])
+        composite=round((ml_prob+tfri_v)/2,1)
+        rows.append({'날짜':row['날짜'],'ML발화확률(%)':ml_prob,'TFRI(%)':tfri_v,
+                     '종합위험(%)':composite,'WHI':whi,'IDA':ida,'HRI':hri,
+                     '등급':risk_grade(composite),'최고기온':row['최고기온'],
+                     '강수량':row['강수량'],'평균습도':row['평균습도'],
+                     '출처':row.get('출처','')})
+    return pd.DataFrame(rows)
+
+# ── GPT 가이드 ────────────────────────────────────────────────
+def get_ai_guide(sido, month, grade, ml_pct, tfri_pct, whi, ida, hri, reasons, api_key):
+    if not _OPENAI_PKG or not api_key: return None,"API KEY 없음"
+    try:
+        client=OpenAI(api_key=api_key)
+        prompt=f"""당신은 KEPCO 전력설비 화재 예방 전문가 (IEC 60076-7·CIGRE 기준 정통)입니다.
+
+지역={sido}, {month}월, 위험등급={grade}
+ML 발화확률={ml_pct:.1f}%  TFRI={tfri_pct:.1f}%  종합={(ml_pct+tfri_pct)/2:.1f}%
+WHI={whi:.1f} / IDA={ida:.1f} / HRI={hri:.1f}
+주요 위험 요인: {', '.join(reasons) if reasons else '없음'}
+
+아래 4항목을 각각 2~3줄 실무 중심으로 작성하세요:
+### 🔍 위험 메커니즘
+### ✅ 즉시 점검 항목 (bullet 3~4개, 기준값 포함)
+### 🔧 이번 달 정비 계획
+### 🌦️ 기상 대응 조치"""
+        resp=client.chat.completions.create(model="gpt-4o-mini",
+            messages=[{"role":"user","content":prompt}],max_tokens=600,temperature=0.25)
+        return resp.choices[0].message.content,None
+    except Exception as e: return None,str(e)
+
+def rule_guide(grade, whi, ida):
+    base={'낮음':'정기 점검 주기를 유지하세요.',
+          '보통':'취약 설비를 집중 모니터링하세요.',
+          '높음':'부하율 높은 변압기를 즉시 점검하고 비상 대응 체계를 가동하세요.',
+          '매우높음':'즉각 특별 점검 및 24시간 감시 체계를 구축하세요.'}.get(grade,'')
+    items=['절연저항 측정(기준:≥1GΩ@1kV)','부스바·단자 발열 점검(IR카메라)']
+    if whi>60: items+=['냉각팬·방열기 작동 점검','부하 분산 및 과부하 차단기 검토']
+    if ida>50: items+=['절연유 내전압 측정(기준:≥30kV/2.5mm)','흡습 브리더·실리카겔 교체']
+    if whi>40: items+=['방수 패킹·케이블 관통부 실링 점검']
+    return f"**{base}**\n\n**권장 점검 항목:**\n"+"\n".join(f"- {i}" for i in items[:5])
 
 # ── 사이드바 ──────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## ⚡ TransFireRisk")
-    st.markdown("**변압기 화재 위험도 예측**")
-    st.markdown("날씨 빅데이터 콘테스트 2026")
+    st.markdown("### ⚡ TransFireRisk IMS")
+    st.markdown(f"**{CUR_YEAR}.{CUR_MONTH:02d}.{TODAY.day:02d}**  `{NOW.strftime('%H:%M')} KST`")
+    # 언어 선택 (session_state에 저장)
+    lang_sel = st.radio("🌐 언어 / Language", ["한국어", "English"], horizontal=True,
+                        key='lang')
     st.markdown("---")
-    st.markdown("""
-    **데이터**
-    - 소방청 화재발생정보 (2020~2024)
-    - Open-Meteo 기상 데이터 (17개 시도)
+    view_month=st.selectbox(f"📅 {T('view_month')}",list(range(1,13)),
+        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x])
 
-    **모델**
-    - XGBoost Regressor
-    - 1,020행 (17시도×5년×12월)
-    - 피처 16개
-
-    **분석 단위**: 시도 × 월
-    """)
+    baseline=get_baseline(view_month)
+    vh=baseline[baseline['등급']=='매우높음']['시도'].tolist()
+    hi=baseline[baseline['등급']=='높음']['시도'].tolist()
+    st.markdown(f"**🚨 {T('sidebar_title')}**")
+    if vh: st.error(f"🔴 {T('p1_label')} ({len(vh)}): {', '.join(vh)}")
+    if hi: st.warning(f"🟠 {T('p2_label')} ({len(hi)}): {', '.join(hi)}")
+    if not vh and not hi: st.success(f"✅ {T('normal_label')}")
     st.markdown("---")
-    page = st.radio("페이지", ["📊 현황 분석", "🌦️ 날씨-화재 상관", "🔮 위험도 예측"])
+    st.markdown("**🔑 API Keys**")
+    kma_key=st.text_input("기상청 / KMA API Key",value=os.environ.get("KMA_API_KEY",""),
+        type="password",placeholder="공공데이터포털 발급 키")
+    env_oa=os.environ.get("OPENAI_API_KEY","")
+    if env_oa: st.success("GPT Key ✅"); openai_key=env_oa
+    else: openai_key=st.text_input("GPT API Key (OpenAI)",type="password",placeholder="sk-...")
+    st.markdown("---")
+    st.markdown(f"**{T('risk_legend')}**")
+    st.markdown(f"🔴 **{T('grade_vh')}**\n🟠 **{T('grade_h')}**\n🟡 **{T('grade_m')}**\n🟢 **{T('grade_l')}**\n\n*ML + TFRI avg*")
 
-# ═══════════════════════════════════════════════════════════
-# 페이지 1: 현황 분석
-# ═══════════════════════════════════════════════════════════
-if page == "📊 현황 분석":
-    st.title("📊 변압기 화재 발생 현황 (2020~2024)")
+# ── IMS 헤더 ─────────────────────────────────────────────────
+st.markdown(f"""
+<div class="ims-header">
+  <div>
+    <div style="color:#90CAF9;font-size:0.75rem;letter-spacing:3px">INTEGRATED MANAGEMENT SYSTEM</div>
+    <div style="color:#fff;font-size:1.7rem;font-weight:800;line-height:1.1">⚡ TransFireRisk IMS</div>
+    <div style="color:#BBDEFB;font-size:0.82rem;margin-top:2px">
+      변압기 화재 위험 통합관리 시스템 · 발화 확률 모델 v3.0 · 날씨 빅데이터 콘테스트 2026
+    </div>
+  </div>
+  <div style="text-align:right;color:#90CAF9">
+    <div style="font-size:1.1rem;font-weight:600;color:#fff">{CUR_YEAR}년 {MONTH_KR[view_month]} 기준</div>
+    <div style="font-size:0.8rem">앙상블(XGB+RF+LR) · 28 피처 · AUC 0.640</div>
+    <div style="font-size:0.78rem;margin-top:2px">
+      {'🟢 KMA 연결됨' if kma_key else '⚪ KMA 미설정'}
+      {'  |  🤖 GPT 연결됨' if openai_key else ''}
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
 
-    # KPI 카드
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("5년 총 화재",     f"{int(df['변압기화재건수'].sum())}건")
-    c2.metric("연평균",          f"{df.groupby('연도')['변압기화재건수'].sum().mean():.0f}건/년")
-    c3.metric("최다 지역",       df.groupby('시도')['변압기화재건수'].sum().idxmax())
-    c4.metric("최다 발생월",     f"{df.groupby('월')['변압기화재건수'].sum().idxmax()}월")
-    c5.metric("2025 예상",       "68건 ↑", delta="전년 대비 +13%")
+# ── 탭 (언어에 따라 동적 레이블) ─────────────────────────────
+tab1,tab2,tab3,tab4,tab5,tab6=st.tabs([
+    T('tab_dashboard'), T('tab_region'),  T('tab_forecast'),
+    T('tab_risk'),      T('tab_insp'),    T('tab_model'),
+])
+
+# ═══════════════════════════════════════════════════════════════
+# 탭 1  종합 현황판
+# ═══════════════════════════════════════════════════════════════
+with tab1:
+    if vh: st.markdown(f'<div class="alert-p1">🔴 [P1] {"Immediate Inspection" if T("p1_label")=="P1 Immediate" else "즉시 점검"} — {"  ·  ".join(vh)}</div>',
+                       unsafe_allow_html=True)
+    if hi: st.markdown(f'<div class="alert-p2">🟠 [P2] {"Caution" if T("p2_label")=="P2 Caution" else "주의"} — {"  ·  ".join(hi)}</div>',
+                       unsafe_allow_html=True)
+
+    # ── AI 운영 브리핑 ─────────────────────────────────────────
+    _brief_key = f"briefing_{view_month}_{st.session_state.get('lang','ko')}"
+    with st.expander(f"**{T('ai_briefing')}**  *(GPT-4o-mini)*", expanded=True):
+        col_b1, col_b2 = st.columns([4,1])
+        with col_b2:
+            if st.button(T('ai_refresh'), key="brief_refresh", use_container_width=True):
+                st.session_state.pop(_brief_key, None)
+        with col_b1:
+            if _brief_key not in st.session_state:
+                if openai_key:
+                    with st.spinner("AI generating briefing..."):
+                        brief = get_ai_briefing(baseline, view_month, CUR_YEAR, openai_key)
+                    st.session_state[_brief_key] = brief or rule_briefing(baseline, view_month)
+                else:
+                    st.session_state[_brief_key] = rule_briefing(baseline, view_month)
+            st.markdown(st.session_state[_brief_key])
+            if not openai_key:
+                st.caption(T('ai_no_key'))
+    st.markdown("---")
+
+    prev_base=get_baseline(view_month-1 if view_month>1 else 12)
+    avg_now =baseline['종합위험'].mean(); avg_prev=prev_base['종합위험'].mean()
+    exp_fire=baseline['발화확률'].apply(lambda x: 1 if x>=40 else 0.5 if x>=25 else 0).sum()
+
+    k1,k2,k3,k4,k5=st.columns(5)
+    k1.metric(T('avg_risk'),  f"{avg_now:.1f}%",
+              delta=f"{avg_now-avg_prev:+.1f}%p {'MoM' if T('avg_risk')=='National Avg Risk' else '전월比'}")
+    k2.metric(T('p1_count'),  f"{len(vh)} {'regions' if T('p1_count')=='P1 Immediate' else '개 지역'}",
+              delta=', '.join(vh) if vh else ("N/A" if T('p1_count')=='P1 Immediate' else "해당 없음"),
+              delta_color="inverse" if vh else "off")
+    k3.metric(T('p2_count'),  f"{len(hi)} {'regions' if T('p2_count')=='P2 Caution' else '개'}")
+    k4.metric(T('est_fire'),  f"{exp_fire:.0f} {'fires' if T('est_fire')=='Est. High-Risk Fires' else '건'}",
+              help="≥40%: 1건, 25~40%: 0.5건 기대값")
+    k5.metric(T('top_region'), baseline.iloc[0]['시도'],
+              delta=f"{baseline.iloc[0]['종합위험']:.0f}%")
 
     st.markdown("---")
-    col1, col2 = st.columns(2)
+    st.markdown(f"### 📍 {MONTH_KR[view_month]} {T('region_grid')} (ML + TFRI)")
 
-    with col1:
-        yearly = df.groupby('연도').agg(
-            실제=('변압기화재건수','sum'), 예측=('예측건수','sum')
-        ).reset_index()
-        fig = go.Figure()
-        fig.add_bar(x=yearly['연도'], y=yearly['실제'], name='실제 화재건수',
-                    marker_color='#EF5350', opacity=0.85,
-                    text=yearly['실제'], textposition='outside')
-        fig.add_scatter(x=yearly['연도'], y=yearly['예측'], name='모델 예측',
-                        mode='lines+markers', line=dict(color='#1565C0', width=2.5),
-                        marker=dict(size=9))
-        fig.update_layout(title='연도별 변압기 화재 건수 추이',
-                          xaxis_title='연도', yaxis_title='건수',
-                          height=360, legend=dict(x=0.01,y=0.99),
-                          xaxis=dict(tickvals=yearly['연도']))
-        st.plotly_chart(fig, use_container_width=True)
+    rows_5=[baseline.iloc[i:i+5] for i in range(0,len(baseline),5)]
+    for grp in rows_5:
+        cols=st.columns(5)
+        for ci,(_,reg) in enumerate(grp.iterrows()):
+            g=reg['등급']; ml=reg['발화확률']; tf=reg['TFRI']; v=reg['종합위험']
+            with cols[ci]:
+                st.markdown(f"""
+                <div style="background:{RISK_BG[g]};border:2px solid {RISK_COLOR[g]};
+                  border-radius:10px;padding:12px 6px;text-align:center;min-height:110px">
+                  <div style="font-size:0.95rem;font-weight:700;color:#333">{reg['시도']}</div>
+                  <div style="font-size:2.0rem;font-weight:900;color:{RISK_TEXT[g]};
+                    line-height:1.1;margin:2px 0">{v:.0f}%</div>
+                  <div style="font-size:0.68rem;color:#888">ML {ml:.0f}%  TFRI {tf:.0f}%</div>
+                  <div style="font-size:0.75rem;color:{RISK_TEXT[g]}">{RISK_EMOJI[g]} {g}</div>
+                </div>""", unsafe_allow_html=True)
 
-    with col2:
-        sido_sum = df.groupby('시도')['변압기화재건수'].sum().reset_index()
-        sido_sum = sido_sum.sort_values('변압기화재건수')
-        fig = px.bar(sido_sum, x='변압기화재건수', y='시도',
-                     orientation='h', color='변압기화재건수',
-                     color_continuous_scale='Reds',
-                     title='시도별 변압기 화재 발생건수 (5년 합계)',
-                     text='변압기화재건수')
-        fig.update_traces(textposition='outside')
-        fig.update_layout(height=360, coloraxis_showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
-
-    # 히트맵
-    st.markdown("#### 🗺️ 시도 × 월별 화재 발생 히트맵")
-    pivot = df.groupby(['시도','월'])['변압기화재건수'].sum().unstack().fillna(0)
-    fig = px.imshow(pivot, color_continuous_scale='YlOrRd', aspect='auto',
-                    labels=dict(x='월', y='시도', color='화재건수'),
-                    title='시도 × 월별 변압기 화재 (2020~2024 합계)')
-    fig.update_xaxes(tickvals=list(range(1,13)),
-                     ticktext=[f'{i}월' for i in range(1,13)])
-    fig.update_layout(height=430)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 발화요인 분석
-    st.markdown("#### ⚡ 발화요인별 발생 현황 (소방청 원본)")
-    cause_data = {
-        '미확인단락':13, '절연열화에 의한 단락':12, '과부하/과전류':12,
-        '트래킹에 의한 단락':8, '접촉불량에 의한 단락':6, '노후':6,
-        '기타(전기적요인)':5, '누전,지락':4, '기타(기계적요인)':3,
-    }
-    cdf = pd.DataFrame({'발화요인':list(cause_data.keys()), '건수':list(cause_data.values())})
-    fig = px.bar(cdf.sort_values('건수'), x='건수', y='발화요인', orientation='h',
-                 color='건수', color_continuous_scale='Oranges',
-                 title='변압기 화재 발화요인 소분류 (2020~2024, 86건)')
-    fig.update_layout(height=380, coloraxis_showscale=False)
-    st.plotly_chart(fig, use_container_width=True)
-
-# ═══════════════════════════════════════════════════════════
-# 페이지 2: 날씨-화재 상관
-# ═══════════════════════════════════════════════════════════
-elif page == "🌦️ 날씨-화재 상관":
-    st.title("🌦️ 날씨 × 변압기 화재 상관 분석")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("📌 변수 중요도 (XGBoost)")
-        fi_df = fi.reset_index()
-        fi_df.columns = ['변수','중요도']
-        fig = px.bar(fi_df, x='중요도', y='변수', orientation='h',
-                     color='중요도', color_continuous_scale='Blues',
-                     title='예측 모델의 변수 중요도')
-        fig.update_layout(height=430, yaxis={'categoryorder':'total ascending'},
-                          coloraxis_showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        st.subheader("🔥 발화요인별 날씨 조건")
-        cause_df = pd.DataFrame({
-            '발화요인':  ['과부하/과전류','절연열화·단락','트래킹·단락','누전·지락','자연재해'],
-            '평균기온(℃)':[13.5, 10.4, 16.7, 21.8, 23.4],
-            '평균습도(%)':[ 74,   76,   82,   81,   89],
-            '강수량(mm)': [0.6,  6.8, 11.6, 13.7, 17.2],
-        })
-        fig = go.Figure()
-        fig.add_bar(name='평균기온(℃)', x=cause_df['발화요인'], y=cause_df['평균기온(℃)'], marker_color='#EF5350')
-        fig.add_bar(name='평균습도(%)', x=cause_df['발화요인'], y=cause_df['평균습도(%)'], marker_color='#42A5F5')
-        fig.add_bar(name='강수량(mm)',  x=cause_df['발화요인'], y=cause_df['강수량(mm)'],  marker_color='#66BB6A')
-        fig.update_layout(barmode='group', height=430, xaxis_tickangle=-15,
-                          title='발화요인별 화재 당일 평균 날씨 조건')
-        st.plotly_chart(fig, use_container_width=True)
-
-    # 산점도
     st.markdown("---")
-    st.subheader("🔍 날씨 변수별 화재 발생 분포")
-    col_a, col_b = st.columns([1,3])
+    col_a,col_b=st.columns(2)
     with col_a:
-        sel_var = st.selectbox("날씨 변수", [
-            '월최고기온','월평균습도','월강수합계','월평균일교차','강수일수','월전7일강수합계'
-        ])
+        st.markdown("#### 📊 종합위험 순위")
+        fig=px.bar(baseline,x='종합위험',y='시도',orientation='h',
+            color='등급',color_discrete_map=RISK_COLOR,
+            category_orders={'등급':['매우높음','높음','보통','낮음']},
+            text=baseline['종합위험'].apply(lambda x:f"{x:.0f}%"))
+        fig.update_traces(textposition='outside')
+        fig.update_layout(height=440,yaxis={'categoryorder':'total ascending'},
+            xaxis_title='종합위험도 (%)',yaxis_title='',
+            margin=dict(l=0,r=60,t=20,b=20))
+        st.plotly_chart(fig,use_container_width=True)
+
     with col_b:
-        fig = px.scatter(df, x=sel_var, y='변압기화재건수',
-                         color='계절', size_max=10, opacity=0.6,
-                         hover_data=['시도','연도','월'],
-                         color_discrete_map={'봄':'#66BB6A','여름':'#EF5350',
-                                             '가을':'#FFA726','겨울':'#42A5F5'},
-                         title=f'{sel_var} vs 변압기 화재 건수')
-        fig.update_layout(height=360)
-        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("#### 📈 ML 발화확률 vs TFRI 비교")
+        comp=baseline[['시도','발화확률','TFRI','종합위험']].sort_values('종합위험',ascending=True)
+        fig=go.Figure()
+        fig.add_bar(x=comp['발화확률'],y=comp['시도'],name='ML 발화확률',
+            marker_color='#1565C0',opacity=0.75,orientation='h')
+        fig.add_bar(x=comp['TFRI'],y=comp['시도'],name='TFRI 복합지수',
+            marker_color='#E91E63',opacity=0.75,orientation='h')
+        fig.add_scatter(x=comp['종합위험'],y=comp['시도'],mode='markers',
+            marker=dict(color='#333',size=8,symbol='diamond'),name='종합위험',orientation='h')
+        fig.update_layout(barmode='group',height=440,xaxis_title='위험도(%)',
+            yaxis_title='',margin=dict(l=0,r=10,t=20,b=20))
+        st.plotly_chart(fig,use_container_width=True)
 
-    # 계절 분석
-    col1, col2 = st.columns(2)
-    with col1:
-        season_df = df.groupby('계절')['변압기화재건수'].sum().reset_index()
-        fig = px.pie(season_df, values='변압기화재건수', names='계절',
-                     color='계절',
-                     color_discrete_map={'봄':'#66BB6A','여름':'#EF5350',
-                                         '가을':'#FFA726','겨울':'#42A5F5'},
-                     title='계절별 변압기 화재 비율')
-        fig.update_layout(height=320)
-        st.plotly_chart(fig, use_container_width=True)
-    with col2:
-        month_df = df.groupby('월')['변압기화재건수'].sum().reset_index()
-        fig = px.bar(month_df, x='월', y='변압기화재건수',
-                     color='변압기화재건수', color_continuous_scale='Reds',
-                     title='월별 변압기 화재 발생건수')
-        fig.update_xaxes(tickvals=list(range(1,13)), ticktext=[f'{i}월' for i in range(1,13)])
-        fig.update_layout(height=320, coloraxis_showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
+    if '월최고기온' in baseline.columns:
+        st.markdown("---")
+        w1,w2,w3,w4=st.columns(4)
+        w1.metric("🌡️ 고온 지역 (≥33℃)",f"{(baseline['월최고기온']>=33).sum()}개")
+        w2.metric("💧 고습 지역 (≥80%)", f"{(baseline['월평균습도']>=80).sum()}개")
+        w3.metric("🌧️ 강수 지역 (≥100mm)",f"{(baseline['월강수합계']>=100).sum()}개")
+        w4.metric("🔴 TFRI 최고",f"{baseline.iloc[0]['시도']} {baseline.iloc[0]['TFRI']:.0f}%")
 
-    # 날씨 3축 요약 박스
-    st.markdown("---")
-    st.markdown("### 🌡️ 날씨가 변압기를 공격하는 3가지 방식")
-    b1, b2, b3 = st.columns(3)
-    b1.info("**① 열 (고온)**\n\n여름 폭염 → 에어컨 수요 급증\n→ 변압기 **과부하/과전류**\n\n관련: 최고기온, 연속고온일수")
-    b2.warning("**② 습기 (고습·강수)**\n\n비·습기 → 절연체 오염\n→ **트래킹·누전** 단락\n\n관련: 평균습도, 강수합계")
-    b3.error("**③ 온도 변화 (일교차)**\n\n낮밤 기온차 → 팽창·수축 반복\n→ **절연열화** 균열\n\n관련: 기온일교차")
+# ═══════════════════════════════════════════════════════════════
+# 탭 2  지역 상세
+# ═══════════════════════════════════════════════════════════════
+with tab2:
+    st.markdown("## 🗺️ 지역 상세 조회")
+    c1,c2=st.columns(2)
+    with c1: sel_sido=st.selectbox("지역",SIDO_LIST)
+    with c2: sel_month=st.selectbox("월",list(range(1,13)),
+        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x])
 
-# ═══════════════════════════════════════════════════════════
-# 페이지 3: 위험도 예측
-# ═══════════════════════════════════════════════════════════
-elif page == "🔮 위험도 예측":
-    st.title("🔮 변압기 화재 위험도 실시간 예측")
-    st.info("날씨 조건을 입력하면 해당 시도의 이번 달 변압기 화재 위험도를 예측합니다.")
+    row=df[(df['시도']==sel_sido)&(df['연도']==2024)&(df['월']==sel_month)]
+    if len(row)==0: row=df[(df['시도']==sel_sido)&(df['월']==sel_month)].tail(1)
+    r=row.iloc[0] if len(row) else pd.Series()
+    ml_pct=float(r.get('발화확률',20))
+    t,whi,ida,hri=compute_tfri(sel_sido,sel_month,
+        r.get('월최고기온',20),r.get('월평균기온',15),
+        r.get('월평균습도',70),r.get('월강수합계',50),r.get('월평균일교차',8))
+    composite=round((ml_pct+t)/2,1)
+    grade=risk_grade(composite)
+    color=RISK_COLOR[grade]
 
-    col_inp, col_out = st.columns([1,1])
-
-    with col_inp:
-        st.subheader("📥 조건 입력")
-        pred_sido    = st.selectbox("시도 선택", SIDO_LIST)
-        pred_month   = st.slider("월", 1, 12, 7)
-        st.markdown("**기상 조건**")
-        pred_maxtemp = st.slider("월 최고기온 (℃)",  -10.0, 42.0, 33.0, 0.5)
-        pred_avgtemp = st.slider("월 평균기온 (℃)",  -15.0, 35.0, 27.0, 0.5)
-        pred_mintemp = st.slider("월 최저기온 (℃)",  -20.0, 30.0, 22.0, 0.5)
-        pred_humid   = st.slider("월 평균습도 (%)",    30.0,100.0, 82.0, 1.0)
-        pred_rain    = st.slider("월 강수합계 (mm)",    0.0,600.0,150.0, 5.0)
-        pred_wind    = st.slider("월 최대풍속 (km/h)",  0.0, 80.0, 20.0, 1.0)
-        pred_range   = st.slider("월 기온일교차 (℃)",   0.0, 20.0,  6.0, 0.5)
-        pred_rdays   = st.slider("강수일수 (일)",        0,   31,    12)
-
-        # 지역 이력 (데이터 평균으로 자동 설정)
-        elec_h = df[df['시도']==pred_sido]['전년전기화재건수'].mean()
-        tr_h   = df[df['시도']==pred_sido]['전년변압기화재건수'].mean()
-        sido_c = SIDO_LIST.index(pred_sido)
-
-        X_input = pd.DataFrame([{
-            '월최고기온':pred_maxtemp,'월평균기온':pred_avgtemp,'월최저기온':pred_mintemp,
-            '월평균습도':pred_humid,'월강수합계':pred_rain,'월최대풍속':pred_wind,
-            '월평균일교차':pred_range,'강수일수':pred_rdays,
-            '월전3일평균기온':pred_avgtemp*0.95,'월전7일강수합계':pred_rain*0.23,
-            '월연속고온일수':max(0,(pred_maxtemp-33)*3) if pred_maxtemp>33 else 0,
-            '월':pred_month,'계절코드':SEASON_CODE.get(pred_month,1),
-            '시도코드':sido_c,'전년전기화재건수':elec_h,'전년변압기화재건수':tr_h,
-        }])
-
-    with col_out:
-        st.subheader("📊 예측 결과")
-        pred_val = float(model.predict(X_input)[0])
-        pred_val = max(0, pred_val)
-        grade    = risk_grade(pred_val)
-        color    = RISK_COLOR[grade]
-
-        # 결과 카드
+    col_big,col_right=st.columns([1,1])
+    with col_big:
         st.markdown(f"""
-        <div style='text-align:center;padding:28px;border-radius:14px;
-                    background:{color}22;border:3px solid {color};margin-bottom:16px'>
-            <div style='font-size:3.2rem;color:{color};font-weight:bold'>{grade}</div>
-            <div style='font-size:1.3rem;color:#333;margin:6px 0'>
-                예측 화재건수 <b>{pred_val:.2f}건</b>
-            </div>
-            <div style='color:#666'>{pred_sido} · {pred_month}월</div>
-        </div>
-        """, unsafe_allow_html=True)
+        <div style="background:{RISK_BG[grade]};border:3px solid {color};
+          border-radius:14px;padding:28px;text-align:center">
+          <div style="color:#555;font-size:0.9rem">{sel_sido} · {MONTH_KR[sel_month]} (2024 기준)</div>
+          <div style="font-size:4.5rem;font-weight:900;color:{RISK_TEXT[grade]};
+            line-height:1.0;margin:4px 0">{composite:.0f}%</div>
+          <div style="font-size:1.4rem;font-weight:700;color:{RISK_TEXT[grade]}">
+            {RISK_EMOJI[grade]} {grade}
+          </div>
+          <div style="margin-top:10px;display:flex;justify-content:center;gap:24px">
+            <span style="font-size:0.85rem;color:#555">발화확률 <b style="color:{color}">{ml_pct:.0f}%</b></span>
+            <span style="font-size:0.85rem;color:#555">TFRI <b style="color:{color}">{t:.0f}%</b></span>
+          </div>
+        </div>""",unsafe_allow_html=True)
 
-        # 게이지
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=pred_val,
-            delta={'reference':
-                   df[(df['시도']==pred_sido)&(df['월']==pred_month)]['예측건수'].mean()},
-            title={'text':'위험도 (예측 화재건수)', 'font':{'size':14}},
-            gauge={
-                'axis':{'range':[0,2.5],'tickwidth':1},
-                'bar':{'color':color},
-                'steps':[
-                    {'range':[0,0.3], 'color':'#E8F5E9'},
-                    {'range':[0.3,0.7],'color':'#FFFDE7'},
-                    {'range':[0.7,1.2],'color':'#FFF3E0'},
-                    {'range':[1.2,2.5],'color':'#FFEBEE'},
-                ],
-                'threshold':{'line':{'color':'red','width':3},'value':pred_val}
-            }
-        ))
-        fig.update_layout(height=270)
-        st.plotly_chart(fig, use_container_width=True)
+        fig=go.Figure(go.Scatterpolar(
+            r=[whi,ida,hri,whi],
+            theta=['WHI<br>기상위험','IDA<br>절연열화','HRI<br>이력위험','WHI<br>기상위험'],
+            fill='toself',fillcolor=f'{color}33',line=dict(color=color,width=2.5)))
+        fig.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,100])),
+            height=270,margin=dict(l=30,r=30,t=20,b=20),showlegend=False)
+        st.plotly_chart(fig,use_container_width=True)
 
-        # 위험 요인 해석
-        st.subheader("💡 위험 요인")
-        reasons = []
-        if pred_maxtemp >= 33:
-            reasons.append(f"🌡️ 최고기온 **{pred_maxtemp}℃** — 변압기 과부하 위험 구간")
-        if pred_humid >= 80:
-            reasons.append(f"💧 평균습도 **{pred_humid:.0f}%** — 트래킹·절연열화 발생 환경")
-        if pred_rain >= 100:
-            reasons.append(f"🌧️ 강수합계 **{pred_rain:.0f}mm** — 누전·지락 발생 환경")
-        if pred_range <= 5:
-            reasons.append(f"📊 기온일교차 **{pred_range}℃** — 지속 열 누적, 절연 피로")
-        if pred_month in [7, 8]:
-            reasons.append("📅 **7·8월** — 연중 최고 위험 시기 (전체 화재의 29%)")
-        if not reasons:
-            reasons.append("✅ 특이 위험 요인 없음 — 안전한 기상 조건")
-        for r in reasons:
-            st.markdown(f"- {r}")
+        if len(row):
+            m1,m2,m3=st.columns(3)
+            m1.metric("최고기온",f"{r.get('월최고기온','-'):.1f}℃")
+            m2.metric("평균습도",f"{r.get('월평균습도','-'):.0f}%")
+            m3.metric("강수합계",f"{r.get('월강수합계','-'):.0f}mm")
 
-    # 전국 비교
+    with col_right:
+        monthly=df[(df['시도']==sel_sido)&(df['연도']==2024)].groupby('월').agg(
+            ML=('발화확률','mean'), 실제=('변압기화재건수','mean'),
+            maxT=('월최고기온','mean'),avgT=('월평균기온','mean'),
+            humid=('월평균습도','mean'),rain=('월강수합계','mean'),
+            trange=('월평균일교차','mean')).reset_index()
+        monthly['TFRI_m']=monthly.apply(
+            lambda x:compute_tfri(sel_sido,int(x['월']),x['maxT'],x['avgT'],
+                                   x['humid'],x['rain'],x['trange'])[0],axis=1)
+        monthly['종합']  =((monthly['ML']+monthly['TFRI_m'])/2).round(1)
+
+        fig=go.Figure()
+        fig.add_hrect(y0=0,y1=15,fillcolor='#E8F5E9',opacity=0.3,line_width=0)
+        fig.add_hrect(y0=15,y1=25,fillcolor='#FFFDE7',opacity=0.3,line_width=0)
+        fig.add_hrect(y0=25,y1=115,fillcolor='#FFEBEE',opacity=0.3,line_width=0)
+        fig.add_bar(x=monthly['월'],y=monthly['ML'],marker_color='#90CAF9',
+            opacity=0.7,name='ML 발화확률',width=0.35,offset=-0.2)
+        fig.add_bar(x=monthly['월'],y=monthly['TFRI_m'],marker_color='#F48FB1',
+            opacity=0.7,name='TFRI',width=0.35,offset=0.15)
+        fig.add_scatter(x=monthly['월'],y=monthly['종합'],mode='lines+markers',
+            line=dict(color='#1565C0',width=2.5),marker=dict(size=7),name='종합')
+        fig.add_scatter(x=[sel_month],y=[composite],mode='markers',
+            marker=dict(size=14,color='black',symbol='star'),name='현재')
+        fm=monthly[monthly['실제']>0]
+        if len(fm):
+            fig.add_scatter(x=fm['월'],y=fm['종합']+5,mode='markers+text',
+                text='🔥',textfont=dict(size=14),marker=dict(size=1,color='red'),
+                name='과거 화재')
+        fig.update_layout(title=f'{sel_sido} 월별 위험도 (2024)',barmode='overlay',
+            xaxis=dict(tickvals=list(range(1,13)),
+                       ticktext=[f'{i}월' for i in range(1,13)]),
+            yaxis=dict(title='발화 확률 (%)',range=[0,120]),
+            height=380,margin=dict(l=0,r=10,t=40,b=30))
+        st.plotly_chart(fig,use_container_width=True)
+
     st.markdown("---")
-    st.subheader(f"🗺️ {pred_month}월 전국 시도별 위험도 비교")
-    month_cmp = df[df['월']==pred_month].groupby('시도').agg(
-        평균예측=('예측건수','mean')
-    ).reset_index()
-    month_cmp['등급'] = month_cmp['평균예측'].apply(risk_grade)
-    month_cmp = month_cmp.sort_values('평균예측', ascending=False)
+    reasons_det=[]
+    if r.get('월최고기온',0)>=33: reasons_det.append(f"최고기온 {r['월최고기온']:.1f}℃")
+    if r.get('월평균습도',0)>=80:  reasons_det.append(f"평균습도 {r['월평균습도']:.0f}%")
+    if r.get('월강수합계',0)>=100: reasons_det.append(f"강수합계 {r['월강수합계']:.0f}mm")
+    if sel_month in [7,8]:         reasons_det.append("7·8월 고위험 시기")
+    ca,_=st.columns([1,2])
+    with ca:
+        if st.button("🤖 AI 종합 분석 보고서",key="det_ai",use_container_width=True):
+            ai_text,ai_err=get_ai_guide(sel_sido,sel_month,grade,ml_pct,t,
+                                         whi,ida,hri,reasons_det,openai_key)
+            if ai_err: st.markdown(f'<div class="ai-box">{rule_guide(grade,whi,ida)}</div>',
+                                   unsafe_allow_html=True); st.caption(f"규칙 기반 ({ai_err})")
+            else:       st.markdown(f'<div class="ai-box">{ai_text}</div>',unsafe_allow_html=True)
 
-    # 현재 선택 시도 강조
-    month_cmp['강조'] = month_cmp['시도'].apply(lambda x: '★ ' + x if x == pred_sido else x)
+# ═══════════════════════════════════════════════════════════════
+# 탭 3  기상 예보
+# ═══════════════════════════════════════════════════════════════
+with tab3:
+    st.markdown("## 📡 기상 예보 기반 위험도 예측")
+    st.caption(f"{'🟢 기상청 API' if kma_key else '⚪ Open-Meteo'} · ML 앙상블 v3 + TFRI 복합지수")
 
-    fig = px.bar(month_cmp, x='시도', y='평균예측',
-                 color='등급',
-                 color_discrete_map=RISK_COLOR,
-                 category_orders={'등급':['매우높음','높음','보통','낮음']},
-                 title=f'{pred_month}월 시도별 변압기 화재 위험도 (2020~2024 평균)')
-    fig.update_layout(height=380)
-    st.plotly_chart(fig, use_container_width=True)
+    cf1,cf2=st.columns([1,3])
+    with cf1:
+        fc_sido=st.selectbox("지역",SIDO_LIST,key="fc_sido")
+        fc_btn=st.button("🔄 예보 불러오기",use_container_width=True)
 
-# ── 공통 푸터 ──────────────────────────────────────────────────
+    if fc_btn or 'fc_df' not in st.session_state or st.session_state.get('_fc_sido')!=fc_sido:
+        with st.spinner(f"{fc_sido} 예보 로딩..."):
+            fc_df,fc_err,fc_src=fetch_forecast(fc_sido,kma_key)
+            st.session_state.update({'fc_df':fc_df,'fc_err':fc_err,'fc_src':fc_src,'_fc_sido':fc_sido})
+
+    fc_df=st.session_state.get('fc_df'); fc_err=st.session_state.get('fc_err')
+    fc_src=st.session_state.get('fc_src','')
+
+    if fc_err and fc_df is None: st.error(f"예보 로드 실패: {fc_err}")
+    elif fc_df is not None:
+        risk_fc=compute_forecast_risk(fc_df,fc_sido)
+        if fc_src: st.info(f"📡 **{fc_src}**")
+        max_comp=risk_fc['종합위험(%)'].max()
+        max_day=risk_fc.loc[risk_fc['종합위험(%)'].idxmax(),'날짜'].strftime('%m/%d')
+        high_days=(risk_fc['종합위험(%)']>=25).sum()
+        today_r=risk_fc.iloc[0]
+        k1,k2,k3,k4=st.columns(4)
+        k1.metric("오늘 종합위험",f"{today_r['종합위험(%)']:.1f}%")
+        k2.metric("예보 최고",f"{max_comp:.1f}%",help=f"최고: {max_day}")
+        k3.metric("평균 위험",f"{risk_fc['종합위험(%)'].mean():.1f}%")
+        k4.metric("고위험일 (≥25%)",f"{high_days}일")
+        if max_comp>=40:
+            st.markdown(f'<div class="alert-p1">🔴 {fc_sido} — 예보 기간 내 매우높음 예상 (최고 {max_comp:.0f}%, {max_day})</div>',unsafe_allow_html=True)
+        elif max_comp>=25:
+            st.markdown(f'<div class="alert-p2">🟠 {fc_sido} — 예보 기간 내 높음 구간 진입 (최고 {max_comp:.0f}%, {max_day})</div>',unsafe_allow_html=True)
+
+        st.markdown("---")
+        col1,col2=st.columns(2)
+        with col1:
+            fig=go.Figure()
+            fig.add_hrect(y0=0,y1=15,fillcolor='#E8F5E9',opacity=0.25,line_width=0)
+            fig.add_hrect(y0=15,y1=25,fillcolor='#FFFDE7',opacity=0.25,line_width=0)
+            fig.add_hrect(y0=25,y1=115,fillcolor='#FFEBEE',opacity=0.25,line_width=0)
+            fig.add_bar(x=risk_fc['날짜'],y=risk_fc['ML발화확률(%)'],name='ML',
+                marker_color='#90CAF9',opacity=0.65,width=0.35,offset=-0.2)
+            fig.add_bar(x=risk_fc['날짜'],y=risk_fc['TFRI(%)'],name='TFRI',
+                marker_color='#F48FB1',opacity=0.65,width=0.35,offset=0.15)
+            fig.add_scatter(x=risk_fc['날짜'],y=risk_fc['종합위험(%)'],
+                mode='lines+markers',line=dict(color='#1565C0',width=2.5),
+                marker=dict(size=7,color=[RISK_COLOR[g] for g in risk_fc['등급']]),name='종합')
+            fig.update_layout(height=320,yaxis=dict(range=[0,115],title='발화 확률 (%)'),
+                barmode='overlay',title='14일 종합 위험도 예보',
+                margin=dict(l=0,r=10,t=40,b=30))
+            st.plotly_chart(fig,use_container_width=True)
+        with col2:
+            fig=make_subplots(rows=2,cols=1,shared_xaxes=True,
+                subplot_titles=['기온(℃)','강수(mm)'],vertical_spacing=0.15)
+            fig.add_scatter(x=fc_df['날짜'],y=fc_df['최고기온'],name='최고',
+                line=dict(color='#EF5350',width=2),mode='lines+markers',row=1,col=1)
+            fig.add_scatter(x=fc_df['날짜'],y=fc_df['평균기온'],name='평균',
+                line=dict(color='#FF9800',dash='dot'),mode='lines',row=1,col=1)
+            fig.add_scatter(x=fc_df['날짜'],y=fc_df['최저기온'],name='최저',
+                line=dict(color='#42A5F5',width=2),mode='lines+markers',row=1,col=1)
+            fig.add_bar(x=fc_df['날짜'],y=fc_df['강수량'],marker_color='#42A5F5',
+                opacity=0.7,name='강수',row=2,col=1)
+            fig.update_layout(height=320,margin=dict(l=0,r=10,t=30,b=30))
+            st.plotly_chart(fig,use_container_width=True)
+
+        st.markdown("---")
+        disp=risk_fc[['날짜','종합위험(%)','ML발화확률(%)','TFRI(%)','등급','최고기온','강수량','평균습도','출처']].copy()
+        disp['날짜']=disp['날짜'].dt.strftime('%m/%d(%a)'); disp.index=range(1,len(disp)+1)
+        st.dataframe(disp,use_container_width=True,height=300)
+        if st.button("🤖 예보 기반 AI 분석",key="fc_ai"):
+            peak=risk_fc.loc[risk_fc['종합위험(%)'].idxmax()]
+            fc_r=[f"최고기온 {fc_df['최고기온'].max():.1f}℃"] if fc_df['최고기온'].max()>=33 else []
+            if fc_df['평균습도'].mean()>=80: fc_r.append(f"평균습도 {fc_df['평균습도'].mean():.0f}%")
+            if fc_df['강수량'].sum()>=50:    fc_r.append(f"강수합계 {fc_df['강수량'].sum():.0f}mm")
+            at,ae=get_ai_guide(fc_sido,int(peak['날짜'].month),peak['등급'],
+                peak['ML발화확률(%)'],peak['TFRI(%)'],peak['WHI'],peak['IDA'],peak['HRI'],fc_r,openai_key)
+            if ae: st.markdown(f'<div class="ai-box">{rule_guide(peak["등급"],peak["WHI"],peak["IDA"])}</div>',unsafe_allow_html=True)
+            else:  st.markdown(f'<div class="ai-box">{at}</div>',unsafe_allow_html=True)
+    else: st.info("지역을 선택하고 **예보 불러오기** 버튼을 클릭하세요.")
+
+# ═══════════════════════════════════════════════════════════════
+# 탭 4  복합위험 분석
+# ═══════════════════════════════════════════════════════════════
+with tab4:
+    st.markdown("## 🔬 복합위험 분석")
+    st.markdown("""<div class="method-box">
+<b>종합위험도 = (ML 발화확률 + TFRI) / 2</b><br>
+• <b>ML 발화확률</b>: 앙상블(XGB+RF+LR) 이진 분류 — P(화재 발생) × 100%<br>
+• <b>TFRI</b>: WHI(45%) + IDA(35%) + HRI(20%) — IEC 60076-7 / CIGRE WG A2.49<br>
+두 방법의 약점을 서로 보완: ML은 패턴 기반, TFRI는 물리 법칙 기반
+</div>""",unsafe_allow_html=True)
+
+    ca1,ca2=st.columns(2)
+    with ca1: an_sido=st.selectbox("분석 지역",SIDO_LIST,key="an_sido")
+    with ca2: an_month=st.selectbox("분석 월",list(range(1,13)),
+        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x])
+
+    an_row=df[(df['시도']==an_sido)&(df['연도']==2024)&(df['월']==an_month)]
+    if len(an_row)==0: an_row=df[(df['시도']==an_sido)&(df['월']==an_month)].tail(1)
+    an_r=an_row.iloc[0] if len(an_row) else pd.Series()
+    an_ml=float(an_r.get('발화확률',20))
+    tfri_v,whi_v,ida_v,hri_v=compute_tfri(an_sido,an_month,
+        an_r.get('월최고기온',20),an_r.get('월평균기온',15),
+        an_r.get('월평균습도',70),an_r.get('월강수합계',50),an_r.get('월평균일교차',8))
+    comp_v=round((an_ml+tfri_v)/2,1)
+
+    r1,r2,r3=st.columns(3)
+    r1.metric("ML 발화확률",f"{an_ml:.1f}%",help="앙상블 이진분류 (v3.0)")
+    r2.metric("TFRI 복합지수",f"{tfri_v:.1f}%",help="물리·통계 기반")
+    r3.metric("종합위험도",f"{comp_v:.1f}%",help="두 값의 평균")
+
+    cl,cr=st.columns(2)
+    with cl:
+        comp_df=pd.DataFrame({
+            '성분':['WHI (기상위험)','IDA (절연열화)','HRI (이력위험)','TFRI 종합','ML 발화확률','종합위험도'],
+            '값':  [whi_v, ida_v, hri_v, tfri_v, an_ml, comp_v],
+        })
+        clrs=['#1976D2','#D32F2F','#388E3C','#7B1FA2','#0288D1','#000000']
+        fig=px.bar(comp_df,x='값',y='성분',orientation='h',
+            color='성분',color_discrete_sequence=clrs,
+            text=comp_df['값'].apply(lambda x:f"{x:.1f}"),
+            title='위험 성분 분해')
+        fig.update_traces(textposition='outside')
+        fig.update_layout(height=340,xaxis=dict(range=[0,120]),
+            showlegend=False,margin=dict(l=0,r=60,t=40,b=20))
+        st.plotly_chart(fig,use_container_width=True)
+    with cr:
+        fig=go.Figure(go.Scatterpolar(
+            r=[whi_v,ida_v,hri_v,an_ml,comp_v],
+            theta=['WHI<br>기상','IDA<br>절연열화','HRI<br>이력','ML<br>발화확률','종합<br>위험'],
+            fill='toself',fillcolor='rgba(21,101,192,0.15)',
+            line=dict(color='#1565C0',width=2.5)))
+        fig.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,100])),
+            title='위험 성분 레이더',height=340,
+            margin=dict(l=10,r=10,t=50,b=10),showlegend=False)
+        st.plotly_chart(fig,use_container_width=True)
+
+    st.markdown("---")
+    st.markdown(f"#### 전국 {MONTH_KR[an_month]} TFRI 성분 비교")
+    all_t=[]
+    for s in SIDO_LIST:
+        sr=df[(df['시도']==s)&(df['연도']==2024)&(df['월']==an_month)]
+        if len(sr)==0: sr=df[(df['시도']==s)&(df['월']==an_month)].tail(1)
+        if len(sr)==0: continue
+        rr=sr.iloc[0]
+        tv,wh,id_,hr=compute_tfri(s,an_month,rr.get('월최고기온',20),rr.get('월평균기온',15),
+            rr.get('월평균습도',70),rr.get('월강수합계',50),rr.get('월평균일교차',8))
+        ml_v=float(rr.get('발화확률',20))
+        all_t.append({'시도':s,'WHI':wh,'IDA':id_,'HRI':hr,'TFRI':tv,'ML발화확률':ml_v,
+                      '종합':(tv+ml_v)/2})
+    all_t_df=pd.DataFrame(all_t).sort_values('종합',ascending=False)
+    fig=px.bar(all_t_df,x='시도',y=['WHI','IDA','HRI'],barmode='stack',
+        color_discrete_map={'WHI':'#1976D2','IDA':'#D32F2F','HRI':'#388E3C'},
+        title=f'{MONTH_KR[an_month]} 전국 TFRI 성분 스택')
+    fig.update_layout(height=340,margin=dict(l=0,r=10,t=40,b=30),
+        xaxis_tickangle=-30,yaxis_title='지수값')
+    st.plotly_chart(fig,use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════
+# 탭 5  점검 관리
+# ═══════════════════════════════════════════════════════════════
+with tab5:
+    st.markdown("## 📋 점검 관리")
+    if 'insp_status' not in st.session_state:
+        st.session_state.insp_status={s:'대기' for s in SIDO_LIST}
+    if 'insp_memo' not in st.session_state:
+        st.session_state.insp_memo={s:'' for s in SIDO_LIST}
+
+    insp_base=get_baseline(view_month)
+    insp_base['우선순위']=insp_base['종합위험'].apply(
+        lambda x:'P1 즉시' if x>=40 else 'P2 계획' if x>=25 else 'P3 정기')
+    insp_base['예상공수(h)']=insp_base['종합위험'].apply(
+        lambda x:8 if x>=40 else 4 if x>=25 else 2)
+
+    p1=(insp_base['우선순위']=='P1 즉시').sum()
+    p2=(insp_base['우선순위']=='P2 계획').sum()
+    done=sum(1 for v in st.session_state.insp_status.values() if v=='완료')
+
+    k1,k2,k3,k4,k5=st.columns(5)
+    k1.metric("P1 즉시",f"{p1}개")
+    k2.metric("P2 계획",f"{p2}개")
+    k3.metric("P3 정기",f"{17-p1-p2}개")
+    k4.metric("완료",f"{done}/17개")
+    k5.metric("총 예상 공수",f"{insp_base['예상공수(h)'].sum()}h")
+    st.progress(done/17,text=f"점검 완료율: {done/17*100:.0f}%")
+    st.markdown("---")
+
+    for _,row in insp_base.iterrows():
+        s=row['시도']; risk=row['종합위험']; g=row['등급']
+        prio=row['우선순위']; exp_h=int(row['예상공수(h)'])
+        ca,cb,cc,cd,ce=st.columns([1.5,1,1,2,3])
+        with ca:
+            st.markdown(f"""<div style="background:{RISK_BG[g]};border-left:4px solid {RISK_COLOR[g]};
+              border-radius:6px;padding:8px 12px;margin:2px 0"><b>{s}</b>
+              <span style="float:right;font-size:1.1rem;font-weight:900;color:{RISK_TEXT[g]}">
+              {risk:.0f}%</span></div>""",unsafe_allow_html=True)
+        with cb:
+            pc={'P1 즉시':'#F44336','P2 계획':'#FF9800','P3 정기':'#4CAF50'}.get(prio,'#999')
+            st.markdown(f"<span style='color:{pc};font-weight:700;font-size:0.85rem'>{prio}</span>",
+                unsafe_allow_html=True)
+        with cc:
+            st.markdown(f"<span style='font-size:0.85rem;color:#555'>예상 {exp_h}h</span>",
+                unsafe_allow_html=True)
+        with cd:
+            ns=st.selectbox("상태",['대기','점검중','완료','보류'],
+                index=['대기','점검중','완료','보류'].index(st.session_state.insp_status.get(s,'대기')),
+                key=f"st_{s}",label_visibility="collapsed")
+            st.session_state.insp_status[s]=ns
+        with ce:
+            nm=st.text_input("메모",value=st.session_state.insp_memo.get(s,''),
+                key=f"mo_{s}",label_visibility="collapsed",placeholder="담당자·메모...")
+            st.session_state.insp_memo[s]=nm
+
+    st.markdown("---")
+    plan_df=insp_base[['시도','종합위험','발화확률','TFRI','등급','우선순위','예상공수(h)']].copy()
+    plan_df['점검상태']=plan_df['시도'].map(st.session_state.insp_status)
+    plan_df['메모']=plan_df['시도'].map(st.session_state.insp_memo)
+    plan_df.columns=['시도','종합위험(%)','ML발화확률(%)','TFRI(%)','위험등급','우선순위','예상공수(h)','점검상태','메모']
+    st.download_button("📥 점검 계획표 CSV 다운로드",
+        data=plan_df.to_csv(index=False,encoding='utf-8-sig'),
+        file_name=f"TransFireRisk_점검계획_{CUR_YEAR}{view_month:02d}.csv",
+        mime='text/csv')
+
+# ═══════════════════════════════════════════════════════════════
+# 탭 6  이력·모델 정보
+# ═══════════════════════════════════════════════════════════════
+with tab6:
+    st.markdown("## 📊 이력 분석 및 모델 정보")
+
+    col1,col2=st.columns(2)
+    with col1:
+        yearly=df.groupby('연도').agg(실제=('변압기화재건수','sum')).reset_index()
+        yearly['고위험(≥40%)']=df[df['발화확률']>=40].groupby('연도').size().reindex(yearly['연도'],fill_value=0).values
+        fig=go.Figure()
+        fig.add_bar(x=yearly['연도'],y=yearly['실제'],name='실제 화재',
+            marker_color='#EF5350',opacity=0.85,text=yearly['실제'],textposition='outside')
+        fig.add_scatter(x=yearly['연도'],y=yearly['고위험(≥40%)'],name='발화확률≥40% 예측',
+            mode='lines+markers',line=dict(color='#1565C0',width=2.5))
+        fig.update_layout(title='연도별 화재건수 vs 고위험 예측 건수',
+            xaxis=dict(tickvals=yearly['연도']),height=290,
+            margin=dict(l=0,r=10,t=40,b=20))
+        st.plotly_chart(fig,use_container_width=True)
+    with col2:
+        pivot=df.groupby(['시도','월'])['변압기화재건수'].sum().unstack().fillna(0)
+        fig=px.imshow(pivot,color_continuous_scale='YlOrRd',aspect='auto',
+            title='시도 × 월별 화재 누계 히트맵 (2020~2024)')
+        fig.update_xaxes(tickvals=list(range(1,13)),
+            ticktext=[f'{i}월' for i in range(1,13)])
+        fig.update_layout(height=290,margin=dict(l=0,r=10,t=40,b=20))
+        st.plotly_chart(fig,use_container_width=True)
+
+    st.markdown("---")
+    st.markdown(f"#### ⚙️ {T('model_compare')}")
+
+    # ── 왜 F1이 아닌가? ────────────────────────────────────────
+    with st.expander("📐 " + ("Why F2 / MCC / PR-AUC?" if T('avg_risk')=='National Avg Risk'
+                              else "왜 F2 · MCC · PR-AUC인가?"), expanded=False):
+        st.markdown(T('metric_note'))
+
+    # ── 계산된 지표 ────────────────────────────────────────────
+    te_v3 = df[df['연도']>=2023]
+    yb_v3 = (te_v3['변압기화재건수']>0).astype(int)
+    prob_v3 = te_v3['발화확률']/100
+    # v3 metrics at thr=0.25 (best F1)
+    yp_v3 = (prob_v3 >= 0.25).astype(int)
+    f1_v3  = f1_score(yb_v3, yp_v3, zero_division=0)
+    f2_v3  = fbeta_score(yb_v3, yp_v3, beta=2, zero_division=0)
+    mcc_v3 = matthews_corrcoef(yb_v3, yp_v3)
+    prauc_v3 = average_precision_score(yb_v3, prob_v3)
+    rocauc_v3= roc_auc_score(yb_v3, prob_v3)
+
+    if T('avg_risk') == 'National Avg Risk':  # EN
+        perf_data = {
+            'Metric':     ['ROC-AUC','PR-AUC','F2 β=2 (thr=0.25)','F1 (thr=0.25)','MCC','Recall (thr=0.20)','Fire Events Caught'],
+            'v1 Baseline':['0.612',  '~0.08',  '-',                 '0.239',        '-',  '0.219',           '13/32'],
+            'v3 Ensemble':[ f'{rocauc_v3:.3f}', f'{prauc_v3:.3f}',
+                            f'{f2_v3:.3f}', f'{f1_v3:.3f}', f'{mcc_v3:.3f}',
+                            '0.562','18/32'],
+            'Change':     ['↑+0.028','↑↑','New','→','New','↑+0.343','↑+5'],
+        }
+        note = "*(F2 β=2 weights recall 2× — fire miss > false alarm. MCC most robust for 7.8% imbalance.)*"
+    else:  # KO
+        perf_data = {
+            '지표':        ['ROC-AUC','PR-AUC','F2 β=2 (thr=0.25)','F1 (thr=0.25)','MCC','Recall (thr=0.20)','화재 탐지'],
+            'v1 기준':     ['0.612',  '~0.08',  '-',                 '0.239',        '-',  '0.219',           '13/32건'],
+            'v3 앙상블':   [ f'{rocauc_v3:.3f}', f'{prauc_v3:.3f}',
+                            f'{f2_v3:.3f}', f'{f1_v3:.3f}', f'{mcc_v3:.3f}',
+                            '0.562','18/32건'],
+            '변화':        ['↑+0.028','↑↑','신규','→','신규','↑+0.343','↑+5건'],
+        }
+        note = "*(F2 β=2: 재현율 2배 가중 — 화재 미탐지 비용 > 오탐 비용. MCC: 불균형 데이터 가장 신뢰할 수 있는 단일 지표.)*"
+
+    perf_df=pd.DataFrame(perf_data)
+    st.dataframe(perf_df,use_container_width=True,hide_index=True)
+    st.caption(note)
+
+    col3,col4=st.columns(2)
+    with col3:
+        st.markdown("**피처 중요도 (XGB+FE 기준, 상위 15개)**")
+        feat_imp_data={
+            '피처':['지역발화율★','월연속고온일수','월전3일평균기온','월평균습도','기온편차★',
+                   '월평균기온','열습도스트레스★','월_sin★','강수습도★','월_cos★',
+                   '월강수합계','과부하스트레스★','월최고기온','강수일수','전년변압기화재건수'],
+            '중요도':[0.115,0.098,0.047,0.044,0.043,0.043,0.042,0.035,0.035,0.034,
+                     0.031,0.030,0.028,0.027,0.026]
+        }
+        fi_df=pd.DataFrame(feat_imp_data)
+        fig=px.bar(fi_df,x='중요도',y='피처',orientation='h',
+            color=['#E91E63' if '★' in p else '#1565C0' for p in fi_df['피처']],
+            text=fi_df['중요도'].apply(lambda x:f"{x:.3f}"),
+            title='★ = 신규 추가 피처')
+        fig.update_traces(textposition='outside')
+        fig.update_layout(height=430,yaxis={'categoryorder':'total ascending'},
+            showlegend=False,margin=dict(l=0,r=60,t=40,b=20))
+        st.plotly_chart(fig,use_container_width=True)
+
+    with col4:
+        te=df[df['연도']>=2023]
+        yb=(te['변압기화재건수']>0).astype(int)
+        prob=te['발화확률']/100
+        fpr,tpr,_=roc_curve(yb,prob)
+        auc=roc_auc_score(yb,prob)
+        fig=go.Figure()
+        fig.add_scatter(x=fpr,y=tpr,mode='lines',name=f'v3 앙상블 (AUC={auc:.3f})',
+            line=dict(color='#1565C0',width=2.5))
+        fig.add_scatter(x=[0,1],y=[0,1],mode='lines',name='랜덤(AUC=0.5)',
+            line=dict(color='gray',dash='dot'))
+        fig.update_layout(title='ROC Curve (검증셋 2023~2024)',
+            xaxis_title='False Positive Rate',yaxis_title='True Positive Rate',
+            height=430,margin=dict(l=0,r=10,t=40,b=30))
+        st.plotly_chart(fig,use_container_width=True)
+
+    st.markdown("---")
+    c5,c6=st.columns(2)
+    with c5:
+        st.markdown("""**모델 구성**
+| 항목 | 내용 |
+|---|---|
+| 알고리즘 | XGB + RandomForest + LogisticReg |
+| 보팅 | 소프트 보팅 (0.6·0.3·0.1) |
+| 목적함수 | 이진분류 P(화재 발생) |
+| 피처 수 | 28개 (기존 16 + 신규 12) |
+| 임계값 | 0.20 (균형) / 0.15 (Recall 우선) |
+""")
+    with c6:
+        st.markdown("""**개선 핵심 요약**
+| 문제 | 해결책 |
+|---|---|
+| 회귀 → 희소 카운트 불안정 | 이진 분류로 전환 |
+| 클래스 불균형 (8%) | scale_pos_weight + balanced RF |
+| 피처 표현력 부족 | 상호작용·편차·주기 12개 추가 |
+| 단일 모델 불안정 | 3모델 소프트 보팅 앙상블 |
+""")
+
 st.markdown("---")
-st.caption(
-    "📌 **데이터**: 소방청 화재발생정보(2020~2024) · Open-Meteo 기상 API · 국가화재정보시스템  |  "
-    "**모델**: XGBoost Regressor  |  **프로젝트**: TransFireRisk — 날씨 빅데이터 콘테스트 2026"
-)
+st.caption("⚡ **TransFireRisk IMS v6.0**  |  모델: 앙상블 v3 (XGB+RF+LR) · 28피처  |  "
+           "TFRI: IEC 60076-7 · CIGRE WG A2.49  |  기상: 기상청 API + Open-Meteo  |  "
+           "날씨 빅데이터 콘테스트 2026")
