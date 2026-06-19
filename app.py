@@ -835,86 +835,199 @@ with tab2:
 # 탭 3  기상 예보
 # ═══════════════════════════════════════════════════════════════
 with tab3:
-    st.markdown("## 📡 기상 예보 기반 위험도 예측")
-    st.caption(f"{'🟢 기상청 API' if kma_key else '⚪ Open-Meteo'} · ML 앙상블 v3 + TFRI 복합지수")
+    _t3_title = "Weather Forecast Risk Prediction" if _is_en() else "기상 예보 기반 위험도 예측"
+    st.markdown(f"## 📡 {_t3_title}")
+    st.caption("🏛️ KMA (기상청) · 🌐 Open-Meteo — " +
+               ("side-by-side source comparison · ML Ensemble v3 + TFRI" if _is_en()
+                else "두 예보 소스 비교 · ML 앙상블 v3 + TFRI 복합지수"))
 
     cf1,cf2=st.columns([1,3])
     with cf1:
-        fc_sido=st.selectbox("지역",SIDO_LIST,key="fc_sido")
-        fc_btn=st.button("🔄 예보 불러오기",use_container_width=True)
+        fc_sido=st.selectbox("지역" if not _is_en() else "Region", SIDO_LIST, key="fc_sido")
+        fc_btn=st.button("🔄 " + ("Load Forecast" if _is_en() else "예보 불러오기"),
+                         use_container_width=True)
 
-    if fc_btn or 'fc_df' not in st.session_state or st.session_state.get('_fc_sido')!=fc_sido:
-        with st.spinner(f"{fc_sido} 예보 로딩..."):
-            fc_df,fc_err,fc_src=fetch_forecast(fc_sido,kma_key)
-            st.session_state.update({'fc_df':fc_df,'fc_err':fc_err,'fc_src':fc_src,'_fc_sido':fc_sido})
+    # ── 두 소스 독립 fetch ────────────────────────────────────────
+    _need_reload = (fc_btn or
+                    'fc_kma' not in st.session_state or
+                    st.session_state.get('_fc_sido') != fc_sido)
+    if _need_reload:
+        with st.spinner(f"{S(fc_sido)} " + ("forecast loading..." if _is_en() else "예보 로딩...")):
+            kma_df, kma_err = fetch_kma(fc_sido, kma_key)
+            om_df,  om_err  = fetch_openmeteo(fc_sido)
+            st.session_state.update({
+                'fc_kma': kma_df, 'fc_kma_err': kma_err,
+                'fc_om':  om_df,  'fc_om_err':  om_err,
+                '_fc_sido': fc_sido,
+            })
 
-    fc_df=st.session_state.get('fc_df'); fc_err=st.session_state.get('fc_err')
-    fc_src=st.session_state.get('fc_src','')
+    kma_df  = st.session_state.get('fc_kma')
+    kma_err = st.session_state.get('fc_kma_err')
+    om_df   = st.session_state.get('fc_om')
+    om_err  = st.session_state.get('fc_om_err')
 
-    if fc_err and fc_df is None: st.error(f"예보 로드 실패: {fc_err}")
-    elif fc_df is not None:
-        risk_fc=compute_forecast_risk(fc_df,fc_sido)
-        if fc_src: st.info(f"📡 **{fc_src}**")
-        max_comp=risk_fc['종합위험(%)'].max()
-        max_day=risk_fc.loc[risk_fc['종합위험(%)'].idxmax(),'날짜'].strftime('%m/%d')
-        high_days=(risk_fc['종합위험(%)']>=25).sum()
-        today_r=risk_fc.iloc[0]
-        k1,k2,k3,k4=st.columns(4)
-        k1.metric("오늘 종합위험",f"{today_r['종합위험(%)']:.1f}%")
-        k2.metric("예보 최고",f"{max_comp:.1f}%",help=f"최고: {max_day}")
-        k3.metric("평균 위험",f"{risk_fc['종합위험(%)'].mean():.1f}%")
-        k4.metric("고위험일 (≥25%)",f"{high_days}일")
-        if max_comp>=40:
-            st.markdown(f'<div class="alert-p1">🔴 {fc_sido} — 예보 기간 내 매우높음 예상 (최고 {max_comp:.0f}%, {max_day})</div>',unsafe_allow_html=True)
-        elif max_comp>=25:
-            st.markdown(f'<div class="alert-p2">🟠 {fc_sido} — 예보 기간 내 높음 구간 진입 (최고 {max_comp:.0f}%, {max_day})</div>',unsafe_allow_html=True)
+    if kma_df is None and om_df is None:
+        st.error("예보 로드 실패 — KMA: " + str(kma_err) + " / Open-Meteo: " + str(om_err))
+    else:
+        # ── 소스별 위험도 계산 ─────────────────────────────────────
+        risk_kma = compute_forecast_risk(kma_df, fc_sido) if kma_df is not None else None
+        risk_om  = compute_forecast_risk(om_df,  fc_sido) if om_df  is not None else None
 
-        st.markdown("---")
-        col1,col2=st.columns(2)
-        with col1:
-            fig=go.Figure()
-            fig.add_hrect(y0=0,y1=15,fillcolor='#E8F5E9',opacity=0.25,line_width=0)
-            fig.add_hrect(y0=15,y1=25,fillcolor='#FFFDE7',opacity=0.25,line_width=0)
-            fig.add_hrect(y0=25,y1=115,fillcolor='#FFEBEE',opacity=0.25,line_width=0)
-            fig.add_bar(x=risk_fc['날짜'],y=risk_fc['ML발화확률(%)'],name='ML',
-                marker_color='#90CAF9',opacity=0.65,width=0.35,offset=-0.2)
-            fig.add_bar(x=risk_fc['날짜'],y=risk_fc['TFRI(%)'],name='TFRI',
-                marker_color='#F48FB1',opacity=0.65,width=0.35,offset=0.15)
-            fig.add_scatter(x=risk_fc['날짜'],y=risk_fc['종합위험(%)'],
-                mode='lines+markers',line=dict(color='#1565C0',width=2.5),
-                marker=dict(size=7,color=[RISK_COLOR[g] for g in risk_fc['등급']]),name='종합')
-            fig.update_layout(height=320,yaxis=dict(range=[0,115],title='발화 확률 (%)'),
-                barmode='overlay',title='14일 종합 위험도 예보',
-                margin=dict(l=0,r=10,t=40,b=30))
-            st.plotly_chart(fig,use_container_width=True)
-        with col2:
-            fig=make_subplots(rows=2,cols=1,shared_xaxes=True,
-                subplot_titles=['기온(℃)','강수(mm)'],vertical_spacing=0.15)
-            fig.add_scatter(x=fc_df['날짜'],y=fc_df['최고기온'],name='최고',
-                line=dict(color='#EF5350',width=2),mode='lines+markers',row=1,col=1)
-            fig.add_scatter(x=fc_df['날짜'],y=fc_df['평균기온'],name='평균',
-                line=dict(color='#FF9800',dash='dot'),mode='lines',row=1,col=1)
-            fig.add_scatter(x=fc_df['날짜'],y=fc_df['최저기온'],name='최저',
-                line=dict(color='#42A5F5',width=2),mode='lines+markers',row=1,col=1)
-            fig.add_bar(x=fc_df['날짜'],y=fc_df['강수량'],marker_color='#42A5F5',
-                opacity=0.7,name='강수',row=2,col=1)
-            fig.update_layout(height=320,margin=dict(l=0,r=10,t=30,b=30))
-            st.plotly_chart(fig,use_container_width=True)
+        # ── 상단 알림 배너 (두 소스 중 높은 쪽 기준) ──────────────
+        _all_risk = pd.concat([r for r in [risk_kma, risk_om] if r is not None])
+        _max_any  = _all_risk['종합위험(%)'].max()
+        _max_day  = _all_risk.loc[_all_risk['종합위험(%)'].idxmax(), '날짜'].strftime('%m/%d')
+        if _max_any >= 40:
+            st.markdown(f'<div class="alert-p1">🔴 {S(fc_sido)} — '
+                        + ("Very High risk expected in forecast period "
+                           if _is_en() else "예보 기간 내 매우높음 예상 ")
+                        + f"(max {_max_any:.0f}%, {_max_day})</div>", unsafe_allow_html=True)
+        elif _max_any >= 25:
+            st.markdown(f'<div class="alert-p2">🟠 {S(fc_sido)} — '
+                        + ("High risk zone in forecast period "
+                           if _is_en() else "예보 기간 내 높음 구간 진입 ")
+                        + f"(max {_max_any:.0f}%, {_max_day})</div>", unsafe_allow_html=True)
 
         st.markdown("---")
-        disp=risk_fc[['날짜','종합위험(%)','ML발화확률(%)','TFRI(%)','등급','최고기온','강수량','평균습도','출처']].copy()
-        disp['날짜']=disp['날짜'].dt.strftime('%m/%d(%a)'); disp.index=range(1,len(disp)+1)
-        st.dataframe(disp,use_container_width=True,height=300)
-        if st.button("🤖 예보 기반 AI 분석",key="fc_ai"):
-            peak=risk_fc.loc[risk_fc['종합위험(%)'].idxmax()]
-            fc_r=[f"최고기온 {fc_df['최고기온'].max():.1f}℃"] if fc_df['최고기온'].max()>=33 else []
-            if fc_df['평균습도'].mean()>=80: fc_r.append(f"평균습도 {fc_df['평균습도'].mean():.0f}%")
-            if fc_df['강수량'].sum()>=50:    fc_r.append(f"강수합계 {fc_df['강수량'].sum():.0f}mm")
-            at,ae=get_ai_guide(fc_sido,int(peak['날짜'].month),peak['등급'],
-                peak['ML발화확률(%)'],peak['TFRI(%)'],peak['WHI'],peak['IDA'],peak['HRI'],fc_r,openai_key)
-            if ae: st.markdown(f'<div class="ai-box">{rule_guide(peak["등급"],peak["WHI"],peak["IDA"])}</div>',unsafe_allow_html=True)
-            else:  st.markdown(f'<div class="ai-box">{at}</div>',unsafe_allow_html=True)
-    else: st.info("지역을 선택하고 **예보 불러오기** 버튼을 클릭하세요.")
+
+        # ══════════════════════════════════════════════════════════
+        # 두 패널 나란히
+        # ══════════════════════════════════════════════════════════
+        def _risk_panel(src_label, icon, fc_df_src, risk_src, color_main, color_tfri):
+            """공통 위험도 패널 렌더러"""
+            if risk_src is None or fc_df_src is None:
+                st.warning(f"{icon} {src_label} — " +
+                           ("API key not set" if "KMA" in src_label and not kma_key
+                            else "fetch failed"))
+                return
+            mx = risk_src['종합위험(%)'].max()
+            mx_d = risk_src.loc[risk_src['종합위험(%)'].idxmax(),'날짜'].strftime('%m/%d')
+            hi_d = (risk_src['종합위험(%)'] >= 25).sum()
+            tod  = risk_src.iloc[0]
+
+            st.markdown(f"#### {icon} {src_label}")
+            n_days = len(fc_df_src)
+            _lbl_days = f"{n_days}-day" if _is_en() else f"{n_days}일"
+            st.caption(f"{_lbl_days} forecast")
+
+            m1,m2,m3,m4 = st.columns(4)
+            m1.metric("Today" if _is_en() else "오늘", f"{tod['종합위험(%)']:.1f}%")
+            m2.metric("Peak" if _is_en() else "최고", f"{mx:.1f}%", help=mx_d)
+            m3.metric("Avg" if _is_en() else "평균", f"{risk_src['종합위험(%)'].mean():.1f}%")
+            m4.metric("High days" if _is_en() else "고위험일",
+                      f"{hi_d}" + (" days" if _is_en() else "일"))
+
+            # 위험도 차트
+            fig = go.Figure()
+            fig.add_hrect(y0=0,  y1=15,  fillcolor='#E8F5E9', opacity=0.25, line_width=0)
+            fig.add_hrect(y0=15, y1=25,  fillcolor='#FFFDE7', opacity=0.25, line_width=0)
+            fig.add_hrect(y0=25, y1=115, fillcolor='#FFEBEE', opacity=0.25, line_width=0)
+            fig.add_bar(x=risk_src['날짜'], y=risk_src['ML발화확률(%)'], name='ML',
+                        marker_color=color_main, opacity=0.55, width=0.35, offset=-0.2)
+            fig.add_bar(x=risk_src['날짜'], y=risk_src['TFRI(%)'], name='TFRI',
+                        marker_color=color_tfri, opacity=0.55, width=0.35, offset=0.15)
+            fig.add_scatter(x=risk_src['날짜'], y=risk_src['종합위험(%)'],
+                            mode='lines+markers', line=dict(color=color_main, width=2.5),
+                            marker=dict(size=7, color=[RISK_COLOR[g] for g in risk_src['등급']]),
+                            name='종합위험')
+            fig.update_layout(height=280, barmode='overlay',
+                              yaxis=dict(range=[0,115], title='%'),
+                              title=('Combined Risk' if _is_en() else '종합 위험도'),
+                              margin=dict(l=0,r=10,t=36,b=20), showlegend=True,
+                              legend=dict(orientation='h',y=-0.15))
+            st.plotly_chart(fig, use_container_width=True)
+
+            # 기상 차트
+            fig2 = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                subplot_titles=['기온(℃)' if not _is_en() else 'Temp(℃)',
+                                '강수(mm)' if not _is_en() else 'Rain(mm)'],
+                vertical_spacing=0.18)
+            fig2.add_scatter(x=fc_df_src['날짜'], y=fc_df_src['최고기온'], name='최고',
+                line=dict(color='#EF5350',width=2), mode='lines+markers', row=1, col=1)
+            fig2.add_scatter(x=fc_df_src['날짜'], y=fc_df_src['평균기온'], name='평균',
+                line=dict(color='#FF9800',dash='dot'), mode='lines', row=1, col=1)
+            fig2.add_scatter(x=fc_df_src['날짜'], y=fc_df_src['최저기온'], name='최저',
+                line=dict(color='#42A5F5',width=2), mode='lines+markers', row=1, col=1)
+            fig2.add_bar(x=fc_df_src['날짜'], y=fc_df_src['강수량'],
+                marker_color='#42A5F5', opacity=0.7, name='강수', row=2, col=1)
+            fig2.update_layout(height=260, margin=dict(l=0,r=10,t=30,b=20), showlegend=False)
+            st.plotly_chart(fig2, use_container_width=True)
+
+        col_kma, col_om = st.columns(2)
+        with col_kma:
+            if not kma_key:
+                st.markdown("#### 🏛️ KMA (기상청) 3일 예보")
+                st.info("⚪ KMA API 키 미설정\n`.env`에 `KMA_API_KEY`를 추가하면 활성화됩니다.")
+            else:
+                _risk_panel("KMA (기상청) 3일", "🏛️", kma_df, risk_kma,
+                            '#1565C0', '#E91E63')
+        with col_om:
+            _risk_panel("Open-Meteo 14일", "🌐", om_df, risk_om,
+                        '#2E7D32', '#F57F17')
+
+        # ══════════════════════════════════════════════════════════
+        # 비교 차트 (중복 기간)
+        # ══════════════════════════════════════════════════════════
+        if risk_kma is not None and risk_om is not None:
+            st.markdown("---")
+            _cmp_title = "Source Comparison — Overlapping Period" if _is_en() else "소스 비교 — 중복 기간"
+            st.markdown(f"#### 🔀 {_cmp_title}")
+            overlap_dates = set(risk_kma['날짜'].dt.date) & set(risk_om['날짜'].dt.date)
+            if overlap_dates:
+                ck = risk_kma[risk_kma['날짜'].dt.date.isin(overlap_dates)].copy()
+                co = risk_om [risk_om ['날짜'].dt.date.isin(overlap_dates)].copy()
+                fig_cmp = go.Figure()
+                fig_cmp.add_scatter(x=ck['날짜'], y=ck['종합위험(%)'], mode='lines+markers',
+                    name='KMA', line=dict(color='#1565C0',width=2.5),
+                    marker=dict(size=8,symbol='circle'))
+                fig_cmp.add_scatter(x=co['날짜'], y=co['종합위험(%)'], mode='lines+markers',
+                    name='Open-Meteo', line=dict(color='#2E7D32',width=2.5,dash='dash'),
+                    marker=dict(size=8,symbol='diamond'))
+                fig_cmp.add_hrect(y0=25,y1=115,fillcolor='#FFEBEE',opacity=0.18,line_width=0)
+                fig_cmp.update_layout(height=260,
+                    yaxis=dict(range=[0,max(ck['종합위험(%)'].max(),co['종합위험(%)'].max())+15,],
+                               title='종합위험도 (%)'),
+                    margin=dict(l=0,r=10,t=10,b=20),
+                    legend=dict(orientation='h',y=1.12))
+                st.plotly_chart(fig_cmp, use_container_width=True)
+
+                diff = (ck['종합위험(%)'].values - co['종합위험(%)'].values)
+                _diff_lbl = "KMA vs Open-Meteo avg gap" if _is_en() else "KMA vs Open-Meteo 평균 차이"
+                st.caption(f"{_diff_lbl}: **{diff.mean():+.1f}%p**  "
+                           f"(max gap {abs(diff).max():.1f}%p on "
+                           f"{ck.iloc[abs(diff).argmax()]['날짜'].strftime('%m/%d')})")
+            else:
+                st.info("중복 예보 기간 없음 (KMA 3일 예보 로드 필요)")
+
+        # ══════════════════════════════════════════════════════════
+        # 상세 테이블 + AI 분석
+        # ══════════════════════════════════════════════════════════
+        st.markdown("---")
+        _base_risk = risk_om if risk_om is not None else risk_kma
+        _base_df   = om_df   if om_df   is not None else kma_df
+        if _base_risk is not None:
+            disp = _base_risk[['날짜','종합위험(%)','ML발화확률(%)','TFRI(%)','등급',
+                                '최고기온','강수량','평균습도','출처']].copy()
+            disp['날짜'] = disp['날짜'].dt.strftime('%m/%d(%a)')
+            disp.index  = range(1, len(disp)+1)
+            st.dataframe(disp, use_container_width=True, height=280)
+
+            if st.button("🤖 " + ("AI Forecast Analysis" if _is_en() else "예보 기반 AI 분석"),
+                         key="fc_ai"):
+                peak = _base_risk.loc[_base_risk['종합위험(%)'].idxmax()]
+                fc_r = ([f"최고기온 {_base_df['최고기온'].max():.1f}℃"]
+                        if _base_df['최고기온'].max() >= 33 else [])
+                if _base_df['평균습도'].mean() >= 80:
+                    fc_r.append(f"평균습도 {_base_df['평균습도'].mean():.0f}%")
+                if _base_df['강수량'].sum() >= 50:
+                    fc_r.append(f"강수합계 {_base_df['강수량'].sum():.0f}mm")
+                at, ae = get_ai_guide(fc_sido, int(peak['날짜'].month if hasattr(peak['날짜'],'month')
+                                                   else pd.to_datetime(peak['날짜']).month),
+                    peak['등급'], peak['ML발화확률(%)'], peak['TFRI(%)'],
+                    peak['WHI'], peak['IDA'], peak['HRI'], fc_r, openai_key)
+                if ae: st.markdown(f'<div class="ai-box">{rule_guide(peak["등급"],peak["WHI"],peak["IDA"])}</div>',
+                                   unsafe_allow_html=True)
+                else:  st.markdown(f'<div class="ai-box">{at}</div>', unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
 # 탭 4  복합위험 분석
