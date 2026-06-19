@@ -27,6 +27,23 @@ try:
 except ImportError:
     _OPENAI_PKG = False
 
+# ── .env 로드 (python-dotenv) ─────────────────────────────────
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv 없어도 os.environ 은 동작함
+
+_KMA_KEY    = os.environ.get("KMA_API_KEY",    "")
+_OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+# ── Plotly 호환 색상 변환 ──────────────────────────────────────
+def _hex_rgba(hex_color: str, alpha: float = 0.2) -> str:
+    """'#RRGGBB' → 'rgba(R,G,B,alpha)' — scatterpolar 등 fillcolor 에 사용"""
+    h = hex_color.lstrip('#')
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f'rgba({r},{g},{b},{alpha})'
+
 # ══════════════════════════════════════════════════════════════
 #  다국어 지원 (i18n)
 # ══════════════════════════════════════════════════════════════
@@ -98,6 +115,40 @@ def T(key: str) -> str:
     entry = _TRANS.get(key, {})
     lang_key = 'en' if st.session_state.get('lang','한국어') == 'English' else 'ko'
     return entry.get(lang_key, entry.get('ko', key))
+
+def _is_en() -> bool:
+    return st.session_state.get('lang','한국어') == 'English'
+
+# ── 지역명 / 등급 / 계절 / 월 번역 ────────────────────────────
+_SIDO_EN: dict = {
+    '서울':'Seoul',  '부산':'Busan',    '대구':'Daegu',    '인천':'Incheon',
+    '광주':'Gwangju','대전':'Daejeon',  '울산':'Ulsan',    '세종':'Sejong',
+    '경기':'Gyeonggi','강원':'Gangwon', '충북':'Chungbuk', '충남':'Chungnam',
+    '전북':'Jeonbuk','전남':'Jeonnam',  '경북':'Gyeongbuk','경남':'Gyeongnam',
+    '제주':'Jeju',
+}
+_GRADE_EN: dict = {
+    '낮음':'Low','보통':'Moderate','높음':'High','매우높음':'Very High',
+}
+_SEASON_EN: dict = {
+    '봄':'Spring','여름':'Summer','가을':'Fall','겨울':'Winter',
+}
+_MONTH_SHORT: dict = {
+    1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',
+    7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec',
+}
+
+def S(sido: str) -> str:
+    """지역명 번역 (English 모드에서 영문명 반환)"""
+    return _SIDO_EN.get(sido, sido) if _is_en() else sido
+
+def G(grade: str) -> str:
+    """위험도 등급 번역"""
+    return _GRADE_EN.get(grade, grade) if _is_en() else grade
+
+def Mn(month: int) -> str:
+    """월 표시 (EN: Jan / KO: 1월)"""
+    return _MONTH_SHORT.get(month, str(month)) if _is_en() else f"{month}월"
 
 # ══════════════════════════════════════════════════════════════
 #  AI 운영 브리핑
@@ -533,19 +584,22 @@ with st.sidebar:
     vh=baseline[baseline['등급']=='매우높음']['시도'].tolist()
     hi=baseline[baseline['등급']=='높음']['시도'].tolist()
     st.markdown(f"**🚨 {T('sidebar_title')}**")
-    if vh: st.error(f"🔴 {T('p1_label')} ({len(vh)}): {', '.join(vh)}")
-    if hi: st.warning(f"🟠 {T('p2_label')} ({len(hi)}): {', '.join(hi)}")
+    if vh: st.error(f"🔴 {T('p1_label')} ({len(vh)}): {', '.join(S(s) for s in vh)}")
+    if hi: st.warning(f"🟠 {T('p2_label')} ({len(hi)}): {', '.join(S(s) for s in hi)}")
     if not vh and not hi: st.success(f"✅ {T('normal_label')}")
     st.markdown("---")
-    st.markdown("**🔑 API Keys**")
-    kma_key=st.text_input("기상청 / KMA API Key",value=os.environ.get("KMA_API_KEY",""),
-        type="password",placeholder="공공데이터포털 발급 키")
-    env_oa=os.environ.get("OPENAI_API_KEY","")
-    if env_oa: st.success("GPT Key ✅"); openai_key=env_oa
-    else: openai_key=st.text_input("GPT API Key (OpenAI)",type="password",placeholder="sk-...")
+    st.markdown("**🔑 API Status** *(configured via `.env`)*")
+    st.markdown(f"{'🟢' if _KMA_KEY    else '⚪'} KMA {'Connected' if _KMA_KEY    else 'Not set'}")
+    st.markdown(f"{'🟢' if _OPENAI_KEY else '⚪'} GPT {'Connected' if _OPENAI_KEY else 'Not set'}")
+    if not _KMA_KEY or not _OPENAI_KEY:
+        st.caption("`.env` 파일에 키를 설정하세요\nSee `.env.example`")
     st.markdown("---")
     st.markdown(f"**{T('risk_legend')}**")
     st.markdown(f"🔴 **{T('grade_vh')}**\n🟠 **{T('grade_h')}**\n🟡 **{T('grade_m')}**\n🟢 **{T('grade_l')}**\n\n*ML + TFRI avg*")
+
+# ── 전역 API 키 변수 (sidebar 이후에도 사용) ─────────────────
+kma_key    = _KMA_KEY
+openai_key = _OPENAI_KEY
 
 # ── IMS 헤더 ─────────────────────────────────────────────────
 st.markdown(f"""
@@ -558,7 +612,7 @@ st.markdown(f"""
     </div>
   </div>
   <div style="text-align:right;color:#90CAF9">
-    <div style="font-size:1.1rem;font-weight:600;color:#fff">{CUR_YEAR}년 {MONTH_KR[view_month]} 기준</div>
+    <div style="font-size:1.1rem;font-weight:600;color:#fff">{CUR_YEAR}년 {Mn(view_month)} 기준</div>
     <div style="font-size:0.8rem">앙상블(XGB+RF+LR) · 28 피처 · AUC 0.640</div>
     <div style="font-size:0.78rem;margin-top:2px">
       {'🟢 KMA 연결됨' if kma_key else '⚪ KMA 미설정'}
@@ -577,9 +631,11 @@ tab1,tab2,tab3,tab4,tab5,tab6=st.tabs([
 # 탭 1  종합 현황판
 # ═══════════════════════════════════════════════════════════════
 with tab1:
-    if vh: st.markdown(f'<div class="alert-p1">🔴 [P1] {"Immediate Inspection" if T("p1_label")=="P1 Immediate" else "즉시 점검"} — {"  ·  ".join(vh)}</div>',
+    _p1_lbl = "Immediate Inspection" if _is_en() else "즉시 점검"
+    _p2_lbl = "Caution"              if _is_en() else "주의"
+    if vh: st.markdown(f'<div class="alert-p1">🔴 [P1] {_p1_lbl} — {"  ·  ".join(S(s) for s in vh)}</div>',
                        unsafe_allow_html=True)
-    if hi: st.markdown(f'<div class="alert-p2">🟠 [P2] {"Caution" if T("p2_label")=="P2 Caution" else "주의"} — {"  ·  ".join(hi)}</div>',
+    if hi: st.markdown(f'<div class="alert-p2">🟠 [P2] {_p2_lbl} — {"  ·  ".join(S(s) for s in hi)}</div>',
                        unsafe_allow_html=True)
 
     # ── AI 운영 브리핑 ─────────────────────────────────────────
@@ -610,7 +666,7 @@ with tab1:
     k1.metric(T('avg_risk'),  f"{avg_now:.1f}%",
               delta=f"{avg_now-avg_prev:+.1f}%p {'MoM' if T('avg_risk')=='National Avg Risk' else '전월比'}")
     k2.metric(T('p1_count'),  f"{len(vh)} {'regions' if T('p1_count')=='P1 Immediate' else '개 지역'}",
-              delta=', '.join(vh) if vh else ("N/A" if T('p1_count')=='P1 Immediate' else "해당 없음"),
+              delta=', '.join(S(s) for s in vh) if vh else ("N/A" if _is_en() else "해당 없음"),
               delta_color="inverse" if vh else "off")
     k3.metric(T('p2_count'),  f"{len(hi)} {'regions' if T('p2_count')=='P2 Caution' else '개'}")
     k4.metric(T('est_fire'),  f"{exp_fire:.0f} {'fires' if T('est_fire')=='Est. High-Risk Fires' else '건'}",
@@ -619,7 +675,7 @@ with tab1:
               delta=f"{baseline.iloc[0]['종합위험']:.0f}%")
 
     st.markdown("---")
-    st.markdown(f"### 📍 {MONTH_KR[view_month]} {T('region_grid')} (ML + TFRI)")
+    st.markdown(f"### 📍 {Mn(view_month)} {T('region_grid')} (ML + TFRI)")
 
     rows_5=[baseline.iloc[i:i+5] for i in range(0,len(baseline),5)]
     for grp in rows_5:
@@ -630,11 +686,11 @@ with tab1:
                 st.markdown(f"""
                 <div style="background:{RISK_BG[g]};border:2px solid {RISK_COLOR[g]};
                   border-radius:10px;padding:12px 6px;text-align:center;min-height:110px">
-                  <div style="font-size:0.95rem;font-weight:700;color:#333">{reg['시도']}</div>
+                  <div style="font-size:0.95rem;font-weight:700;color:#333">{S(reg['시도'])}</div>
                   <div style="font-size:2.0rem;font-weight:900;color:{RISK_TEXT[g]};
                     line-height:1.1;margin:2px 0">{v:.0f}%</div>
                   <div style="font-size:0.68rem;color:#888">ML {ml:.0f}%  TFRI {tf:.0f}%</div>
-                  <div style="font-size:0.75rem;color:{RISK_TEXT[g]}">{RISK_EMOJI[g]} {g}</div>
+                  <div style="font-size:0.75rem;color:{RISK_TEXT[g]}">{RISK_EMOJI[g]} {G(g)}</div>
                 </div>""", unsafe_allow_html=True)
 
     st.markdown("---")
@@ -699,7 +755,7 @@ with tab2:
         st.markdown(f"""
         <div style="background:{RISK_BG[grade]};border:3px solid {color};
           border-radius:14px;padding:28px;text-align:center">
-          <div style="color:#555;font-size:0.9rem">{sel_sido} · {MONTH_KR[sel_month]} (2024 기준)</div>
+          <div style="color:#555;font-size:0.9rem">{S(sel_sido)} · {Mn(sel_month)} (2024)</div>
           <div style="font-size:4.5rem;font-weight:900;color:{RISK_TEXT[grade]};
             line-height:1.0;margin:4px 0">{composite:.0f}%</div>
           <div style="font-size:1.4rem;font-weight:700;color:{RISK_TEXT[grade]}">
@@ -714,7 +770,7 @@ with tab2:
         fig=go.Figure(go.Scatterpolar(
             r=[whi,ida,hri,whi],
             theta=['WHI<br>기상위험','IDA<br>절연열화','HRI<br>이력위험','WHI<br>기상위험'],
-            fill='toself',fillcolor=f'{color}33',line=dict(color=color,width=2.5)))
+            fill='toself',fillcolor=_hex_rgba(color,0.2),line=dict(color=color,width=2.5)))
         fig.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,100])),
             height=270,margin=dict(l=30,r=30,t=20,b=20),showlegend=False)
         st.plotly_chart(fig,use_container_width=True)
@@ -753,7 +809,7 @@ with tab2:
             fig.add_scatter(x=fm['월'],y=fm['종합']+5,mode='markers+text',
                 text='🔥',textfont=dict(size=14),marker=dict(size=1,color='red'),
                 name='과거 화재')
-        fig.update_layout(title=f'{sel_sido} 월별 위험도 (2024)',barmode='overlay',
+        fig.update_layout(title=f'{S(sel_sido)} ' + ('Monthly Risk (2024)' if _is_en() else '월별 위험도 (2024)'),barmode='overlay',
             xaxis=dict(tickvals=list(range(1,13)),
                        ticktext=[f'{i}월' for i in range(1,13)]),
             yaxis=dict(title='발화 확률 (%)',range=[0,120]),
@@ -918,7 +974,7 @@ with tab4:
         st.plotly_chart(fig,use_container_width=True)
 
     st.markdown("---")
-    st.markdown(f"#### 전국 {MONTH_KR[an_month]} TFRI 성분 비교")
+    st.markdown(f"#### 전국 {Mn(an_month)} TFRI 성분 비교")
     all_t=[]
     for s in SIDO_LIST:
         sr=df[(df['시도']==s)&(df['연도']==2024)&(df['월']==an_month)]
@@ -933,7 +989,7 @@ with tab4:
     all_t_df=pd.DataFrame(all_t).sort_values('종합',ascending=False)
     fig=px.bar(all_t_df,x='시도',y=['WHI','IDA','HRI'],barmode='stack',
         color_discrete_map={'WHI':'#1976D2','IDA':'#D32F2F','HRI':'#388E3C'},
-        title=f'{MONTH_KR[an_month]} 전국 TFRI 성분 스택')
+        title=f'{Mn(an_month)} 전국 TFRI 성분 스택')
     fig.update_layout(height=340,margin=dict(l=0,r=10,t=40,b=30),
         xaxis_tickangle=-30,yaxis_title='지수값')
     st.plotly_chart(fig,use_container_width=True)
@@ -949,48 +1005,63 @@ with tab5:
         st.session_state.insp_memo={s:'' for s in SIDO_LIST}
 
     insp_base=get_baseline(view_month)
+    _P1 = 'P1 Immediate' if _is_en() else 'P1 즉시'
+    _P2 = 'P2 Scheduled' if _is_en() else 'P2 계획'
+    _P3 = 'P3 Routine'   if _is_en() else 'P3 정기'
     insp_base['우선순위']=insp_base['종합위험'].apply(
-        lambda x:'P1 즉시' if x>=40 else 'P2 계획' if x>=25 else 'P3 정기')
+        lambda x:_P1 if x>=40 else _P2 if x>=25 else _P3)
     insp_base['예상공수(h)']=insp_base['종합위험'].apply(
         lambda x:8 if x>=40 else 4 if x>=25 else 2)
 
-    p1=(insp_base['우선순위']=='P1 즉시').sum()
-    p2=(insp_base['우선순위']=='P2 계획').sum()
-    done=sum(1 for v in st.session_state.insp_status.values() if v=='완료')
+    p1=(insp_base['우선순위']==_P1).sum()
+    p2=(insp_base['우선순위']==_P2).sum()
+    _done_label = 'Completed' if _is_en() else '완료'
+    done=sum(1 for v in st.session_state.insp_status.values() if v in ('완료','Completed'))
 
     k1,k2,k3,k4,k5=st.columns(5)
-    k1.metric("P1 즉시",f"{p1}개")
-    k2.metric("P2 계획",f"{p2}개")
-    k3.metric("P3 정기",f"{17-p1-p2}개")
-    k4.metric("완료",f"{done}/17개")
-    k5.metric("총 예상 공수",f"{insp_base['예상공수(h)'].sum()}h")
-    st.progress(done/17,text=f"점검 완료율: {done/17*100:.0f}%")
+    k1.metric(_P1,f"{p1} {'rgns' if _is_en() else '개'}")
+    k2.metric(_P2,f"{p2} {'rgns' if _is_en() else '개'}")
+    k3.metric(_P3,f"{17-p1-p2} {'rgns' if _is_en() else '개'}")
+    k4.metric('Completed' if _is_en() else '완료',f"{done}/17")
+    k5.metric('Est. Man-hours' if _is_en() else '총 예상 공수',f"{insp_base['예상공수(h)'].sum()}h")
+    _prog_txt = f"Completion: {done/17*100:.0f}%" if _is_en() else f"점검 완료율: {done/17*100:.0f}%"
+    st.progress(done/17,text=_prog_txt)
     st.markdown("---")
 
     for _,row in insp_base.iterrows():
         s=row['시도']; risk=row['종합위험']; g=row['등급']
         prio=row['우선순위']; exp_h=int(row['예상공수(h)'])
         ca,cb,cc,cd,ce=st.columns([1.5,1,1,2,3])
+        _status_opts = (['Pending','In Progress','Completed','On Hold']
+                        if _is_en() else ['대기','점검중','완료','보류'])
+        _cur_status = st.session_state.insp_status.get(s,'대기')
+        # normalize stored value for index lookup
+        _cur_idx = 0
+        for _i,_o in enumerate(_status_opts):
+            if _cur_status in (_o, ['대기','점검중','완료','보류'][_i],
+                               ['Pending','In Progress','Completed','On Hold'][_i]):
+                _cur_idx = _i; break
         with ca:
             st.markdown(f"""<div style="background:{RISK_BG[g]};border-left:4px solid {RISK_COLOR[g]};
-              border-radius:6px;padding:8px 12px;margin:2px 0"><b>{s}</b>
+              border-radius:6px;padding:8px 12px;margin:2px 0"><b>{S(s)}</b>
               <span style="float:right;font-size:1.1rem;font-weight:900;color:{RISK_TEXT[g]}">
               {risk:.0f}%</span></div>""",unsafe_allow_html=True)
         with cb:
-            pc={'P1 즉시':'#F44336','P2 계획':'#FF9800','P3 정기':'#4CAF50'}.get(prio,'#999')
+            pc={_P1:'#F44336',_P2:'#FF9800',_P3:'#4CAF50'}.get(prio,'#999')
             st.markdown(f"<span style='color:{pc};font-weight:700;font-size:0.85rem'>{prio}</span>",
                 unsafe_allow_html=True)
         with cc:
-            st.markdown(f"<span style='font-size:0.85rem;color:#555'>예상 {exp_h}h</span>",
+            _h_lbl = f"Est. {exp_h}h" if _is_en() else f"예상 {exp_h}h"
+            st.markdown(f"<span style='font-size:0.85rem;color:#555'>{_h_lbl}</span>",
                 unsafe_allow_html=True)
         with cd:
-            ns=st.selectbox("상태",['대기','점검중','완료','보류'],
-                index=['대기','점검중','완료','보류'].index(st.session_state.insp_status.get(s,'대기')),
+            ns=st.selectbox("Status",_status_opts,index=_cur_idx,
                 key=f"st_{s}",label_visibility="collapsed")
             st.session_state.insp_status[s]=ns
         with ce:
-            nm=st.text_input("메모",value=st.session_state.insp_memo.get(s,''),
-                key=f"mo_{s}",label_visibility="collapsed",placeholder="담당자·메모...")
+            _memo_ph = "Engineer / Notes..." if _is_en() else "담당자·메모..."
+            nm=st.text_input("Memo",value=st.session_state.insp_memo.get(s,''),
+                key=f"mo_{s}",label_visibility="collapsed",placeholder=_memo_ph)
             st.session_state.insp_memo[s]=nm
 
     st.markdown("---")
@@ -1135,6 +1206,6 @@ with tab6:
 """)
 
 st.markdown("---")
-st.caption("⚡ **TransFireRisk IMS v6.0**  |  모델: 앙상블 v3 (XGB+RF+LR) · 28피처  |  "
+st.caption("⚡ **TransFireRisk IMS v7.0**  |  모델: 앙상블 v3 (XGB+RF+LR) · 28피처  |  "
            "TFRI: IEC 60076-7 · CIGRE WG A2.49  |  기상: 기상청 API + Open-Meteo  |  "
            "날씨 빅데이터 콘테스트 2026")
