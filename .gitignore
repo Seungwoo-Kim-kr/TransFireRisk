@@ -1,6 +1,13 @@
 # Large data files
 data/fire_data_20241231.csv
 
+# Intermediate model artifacts (keep only production files)
+model/best_model_v2.pkl
+model/xgb_fire_classifier.pkl
+model/full_predictions_v2.csv
+model/full_predictions_v3.csv
+model/model_comparison.csv
+
 # Python
 __pycache__/
 *.py[cod]
