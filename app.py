@@ -694,16 +694,6 @@ def rule_guide(grade, whi, ida):
 
 # ── 사이드바 ──────────────────────────────────────────────────
 with st.sidebar:
-    # 숨기기 버튼 (JS로 Streamlit 네이티브 collapse 트리거)
-    st.markdown("""
-<button onclick="
-  var btn=window.parent.document.querySelector('[data-testid=collapsedControl]');
-  if(btn)btn.click();
-" style="width:100%;cursor:pointer;padding:6px;background:#f0f2f6;
-  border:1px solid #d0d3d9;border-radius:6px;font-size:0.8rem;
-  color:#555;margin-bottom:6px">◀ 사이드바 숨기기</button>
-""", unsafe_allow_html=True)
-
     st.markdown(f"### ⚡ TransFireRisk IMS")
     st.markdown(f"`{CUR_YEAR}.{CUR_MONTH:02d}.{TODAY.day:02d}` · `{NOW.strftime('%H:%M')} KST`")
     lang_sel = st.radio("🌐 Language", ["한국어", "English"], horizontal=True, key='lang')
@@ -727,20 +717,27 @@ with st.sidebar:
 openai_key = _OPENAI_KEY
 
 # ── IMS 헤더 ─────────────────────────────────────────────────
+_hdr_sub = ("Transformer Fire Risk IMS · Prediction Model v3.0 · Korea Weather Big Data Contest 2026"
+            if _is_en() else
+            "변압기 화재 위험 통합관리 시스템 · 발화 확률 모델 v3.0 · 날씨 빅데이터 콘테스트 2026")
+_hdr_ref = (f"{Mn(view_month)} {CUR_YEAR} Reference"
+            if _is_en() else
+            f"{CUR_YEAR}년 {Mn(view_month)} 기준")
+_hdr_model = ("Ensemble (XGB+RF+LR) · 28 features · AUC 0.640"
+              if _is_en() else
+              "앙상블(XGB+RF+LR) · 28 피처 · AUC 0.640")
 st.markdown(f"""
 <div class="ims-header">
   <div>
     <div style="color:#90CAF9;font-size:0.75rem;letter-spacing:3px">INTEGRATED MANAGEMENT SYSTEM</div>
     <div style="color:#fff;font-size:1.7rem;font-weight:800;line-height:1.1">⚡ TransFireRisk IMS</div>
-    <div style="color:#BBDEFB;font-size:0.82rem;margin-top:2px">
-      변압기 화재 위험 통합관리 시스템 · 발화 확률 모델 v3.0 · 날씨 빅데이터 콘테스트 2026
-    </div>
+    <div style="color:#BBDEFB;font-size:0.82rem;margin-top:2px">{_hdr_sub}</div>
   </div>
   <div style="text-align:right;color:#90CAF9">
-    <div style="font-size:1.1rem;font-weight:600;color:#fff">{CUR_YEAR}년 {Mn(view_month)} 기준</div>
-    <div style="font-size:0.8rem">앙상블(XGB+RF+LR) · 28 피처 · AUC 0.640</div>
+    <div style="font-size:1.1rem;font-weight:600;color:#fff">{_hdr_ref}</div>
+    <div style="font-size:0.8rem">{_hdr_model}</div>
     <div style="font-size:0.78rem;margin-top:2px">
-      {'🤖 GPT Connected' if openai_key else ''}
+      {'🤖 AI Connected' if openai_key else ''}
     </div>
   </div>
 </div>""", unsafe_allow_html=True)
@@ -1117,16 +1114,24 @@ with tab3:
 # ═══════════════════════════════════════════════════════════════
 with tab5:
     st.markdown("## 🔬 " + ("Risk Analysis" if _is_en() else "복합위험 분석"))
-    st.markdown("""<div class="method-box">
+    if _is_en():
+        st.markdown("""<div class="method-box">
+<b>Combined Risk = (ML Fire Probability + TFRI) / 2</b><br>
+• <b>ML Fire Probability</b>: Ensemble (XGB+RF+LR) binary classifier — P(fire occurrence) × 100%<br>
+• <b>TFRI</b>: WHI (45%) + IDA (35%) + HRI (20%) — IEC 60076-7 / CIGRE WG A2.49<br>
+The two signals complement each other: ML is pattern-driven; TFRI is physics-driven.
+</div>""", unsafe_allow_html=True)
+    else:
+        st.markdown("""<div class="method-box">
 <b>종합위험도 = (ML 발화확률 + TFRI) / 2</b><br>
 • <b>ML 발화확률</b>: 앙상블(XGB+RF+LR) 이진 분류 — P(화재 발생) × 100%<br>
 • <b>TFRI</b>: WHI(45%) + IDA(35%) + HRI(20%) — IEC 60076-7 / CIGRE WG A2.49<br>
 두 방법의 약점을 서로 보완: ML은 패턴 기반, TFRI는 물리 법칙 기반
-</div>""",unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
 
     ca1,ca2=st.columns(2)
-    with ca1: an_sido=st.selectbox("분석 지역",SIDO_LIST,key="an_sido")
-    with ca2: an_month=st.selectbox("분석 월",list(range(1,13)),
+    with ca1: an_sido=st.selectbox("Region" if _is_en() else "분석 지역", SIDO_LIST, key="an_sido")
+    with ca2: an_month=st.selectbox("Month" if _is_en() else "분석 월", list(range(1,13)),
         index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x])
 
     an_row=df[(df['시도']==an_sido)&(df['연도']==2024)&(df['월']==an_month)]
@@ -1287,9 +1292,11 @@ with tab7:
         yearly=df.groupby('연도').agg(실제=('변압기화재건수','sum')).reset_index()
         yearly['고위험(≥40%)']=df[df['발화확률']>=40].groupby('연도').size().reindex(yearly['연도'],fill_value=0).values
         fig=go.Figure()
-        fig.add_bar(x=yearly['연도'],y=yearly['실제'],name='실제 화재',
+        fig.add_bar(x=yearly['연도'],y=yearly['실제'],
+            name='Actual Fires' if _is_en() else '실제 화재',
             marker_color='#EF5350',opacity=0.85,text=yearly['실제'],textposition='outside')
-        fig.add_scatter(x=yearly['연도'],y=yearly['고위험(≥40%)'],name='발화확률≥40% 예측',
+        fig.add_scatter(x=yearly['연도'],y=yearly['고위험(≥40%)'],
+            name='Prob≥40% Predicted' if _is_en() else '발화확률≥40% 예측',
             mode='lines+markers',line=dict(color='#1565C0',width=2.5))
         fig.update_layout(title='Annual Fire Count vs High-Risk Predictions' if _is_en() else '연도별 화재건수 vs 고위험 예측 건수',
             xaxis=dict(tickvals=yearly['연도']),height=290,
@@ -1352,17 +1359,25 @@ with tab7:
     col3,col4=st.columns(2)
     with col3:
         st.markdown("**" + ("Feature Importance (XGB+FE, Top 15)" if _is_en() else "피처 중요도 (XGB+FE 기준, 상위 15개)") + "**")
+        _fi_names_ko = ['지역발화율★','월연속고온일수','월전3일평균기온','월평균습도','기온편차★',
+                        '월평균기온','열습도스트레스★','월_sin★','강수습도★','월_cos★',
+                        '월강수합계','과부하스트레스★','월최고기온','강수일수','전년변압기화재건수']
+        _fi_names_en = ['RegionalFireRate★','ConsecHotDays','3dAvgTemp','AvgHumidity','TempAnomaly★',
+                        'AvgTemp','HeatHumidStress★','Month_sin★','RainHumidity★','Month_cos★',
+                        'TotalRain','OverloadStress★','MaxTemp','RainDays','PrevYrFireCnt']
+        _fi_names = _fi_names_en if _is_en() else _fi_names_ko
         feat_imp_data={
-            '피처':['지역발화율★','월연속고온일수','월전3일평균기온','월평균습도','기온편차★',
-                   '월평균기온','열습도스트레스★','월_sin★','강수습도★','월_cos★',
-                   '월강수합계','과부하스트레스★','월최고기온','강수일수','전년변압기화재건수'],
-            '중요도':[0.115,0.098,0.047,0.044,0.043,0.043,0.042,0.035,0.035,0.034,
-                     0.031,0.030,0.028,0.027,0.026]
+            'Feature' if _is_en() else '피처': _fi_names,
+            'Importance' if _is_en() else '중요도':
+                [0.115,0.098,0.047,0.044,0.043,0.043,0.042,0.035,0.035,0.034,
+                 0.031,0.030,0.028,0.027,0.026]
         }
+        _fi_xcol = 'Importance' if _is_en() else '중요도'
+        _fi_ycol = 'Feature'    if _is_en() else '피처'
         fi_df=pd.DataFrame(feat_imp_data)
-        fig=px.bar(fi_df,x='중요도',y='피처',orientation='h',
-            color=['#E91E63' if '★' in p else '#1565C0' for p in fi_df['피처']],
-            text=fi_df['중요도'].apply(lambda x:f"{x:.3f}"),
+        fig=px.bar(fi_df,x=_fi_xcol,y=_fi_ycol,orientation='h',
+            color=['#E91E63' if '★' in p else '#1565C0' for p in fi_df[_fi_ycol]],
+            text=fi_df[_fi_xcol].apply(lambda x:f"{x:.3f}"),
             title='★ = New feature' if _is_en() else '★ = 신규 추가 피처')
         fig.update_traces(textposition='outside')
         fig.update_layout(height=430,yaxis={'categoryorder':'total ascending'},
