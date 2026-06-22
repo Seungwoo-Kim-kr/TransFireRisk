@@ -948,7 +948,7 @@ with st.sidebar:
     lang_sel = st.radio("🌐 Language", ["한국어", "English"], horizontal=True, key='lang')
     st.markdown("---")
     view_month=st.selectbox(f"📅 {T('view_month')}",list(range(1,13)),
-        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x])
+        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x],key="view_month")
 
     baseline=get_baseline(view_month)
     vh=baseline[baseline['등급']=='매우높음']['시도'].tolist()
@@ -1244,9 +1244,9 @@ with tab1:
 with tab2:
     st.markdown("## 🗺️ " + ("Regional Detail" if _is_en() else "지역 상세 조회"))
     c1,c2=st.columns(2)
-    with c1: sel_sido=st.selectbox("지역" if not _is_en() else "Region", SIDO_LIST)
+    with c1: sel_sido=st.selectbox("지역" if not _is_en() else "Region", SIDO_LIST, key="sel_sido")
     with c2: sel_month=st.selectbox("월" if not _is_en() else "Month", list(range(1,13)),
-        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x])
+        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x], key="sel_month")
 
     row=df[(df['시도']==sel_sido)&(df['연도']==2024)&(df['월']==sel_month)]
     if len(row)==0: row=df[(df['시도']==sel_sido)&(df['월']==sel_month)].tail(1)
@@ -1535,7 +1535,7 @@ ML = 데이터 기반 패턴 학습 · TFRI = 물리 법칙 기반 · 결합 = �
     ca1,ca2=st.columns(2)
     with ca1: an_sido=st.selectbox("Region" if _is_en() else "분석 지역", SIDO_LIST, key="an_sido")
     with ca2: an_month=st.selectbox("Month" if _is_en() else "분석 월", list(range(1,13)),
-        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x])
+        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x], key="an_month")
 
     an_row=df[(df['시도']==an_sido)&(df['연도']==2024)&(df['월']==an_month)]
     if len(an_row)==0: an_row=df[(df['시도']==an_sido)&(df['월']==an_month)].tail(1)
