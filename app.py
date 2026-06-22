@@ -440,11 +440,23 @@ def fetch_kma(sido, api_key):
     nx,ny = SIDO_NX_NY.get(sido,(60,127))
     bd,bt = _kma_base_time()
     try:
-        r = requests.get(
-            "http://apis.data.go.kr/1360000/VilageFcstInfoService2.0/getVilageFcst",
-            params=dict(serviceKey=api_key,pageNo=1,numOfRows=1000,dataType='JSON',
-                        base_date=bd,base_time=bt,nx=nx,ny=ny), timeout=12)
-        body = r.json().get('response',{}).get('body',{})
+        # serviceKey는 URL에 직접 삽입해 이중인코딩 방지
+        from urllib.parse import unquote
+        key_dec = unquote(api_key)
+        base_url = ("https://apis.data.go.kr/1360000"
+                    "/VilageFcstInfoService2.0/getVilageFcst")
+        full_url = (f"{base_url}?serviceKey={key_dec}"
+                    f"&pageNo=1&numOfRows=1000&dataType=JSON"
+                    f"&base_date={bd}&base_time={bt}&nx={nx}&ny={ny}")
+        r = requests.get(full_url, timeout=12)
+        if r.status_code == 500:
+            return None, ("인증 실패 (HTTP 500) — 공공데이터포털에서 "
+                          "'기상청 단기예보 조회서비스' 신청 및 활성화 필요")
+        body = r.json().get('response',{})
+        rc = body.get('header',{}).get('resultCode','')
+        if rc not in ('00', ''):
+            return None, f"API 오류 [{rc}] {body.get('header',{}).get('resultMsg','')}"
+        body = body.get('body',{})
         if not body.get('totalCount',0): return None,f"데이터 없음({bd} {bt})"
         raw = pd.DataFrame(body['items']['item'])
         raw['날짜'] = pd.to_datetime(raw['fcstDate'])
@@ -1002,6 +1014,8 @@ with tab3:
         # ══════════════════════════════════════════════════════════
         # 상세 테이블 + AI 분석
         # ══════════════════════════════════════════════════════════
+        # 상세 테이블
+        # ══════════════════════════════════════════════════════════
         st.markdown("---")
         _base_risk = risk_om if risk_om is not None else risk_kma
         _base_df   = om_df   if om_df   is not None else kma_df
@@ -1012,22 +1026,48 @@ with tab3:
             disp.index  = range(1, len(disp)+1)
             st.dataframe(disp, use_container_width=True, height=280)
 
-            if st.button("🤖 " + ("AI Forecast Analysis" if _is_en() else "예보 기반 AI 분석"),
-                         key="fc_ai"):
-                peak = _base_risk.loc[_base_risk['종합위험(%)'].idxmax()]
-                fc_r = ([f"최고기온 {_base_df['최고기온'].max():.1f}℃"]
-                        if _base_df['최고기온'].max() >= 33 else [])
-                if _base_df['평균습도'].mean() >= 80:
-                    fc_r.append(f"평균습도 {_base_df['평균습도'].mean():.0f}%")
-                if _base_df['강수량'].sum() >= 50:
-                    fc_r.append(f"강수합계 {_base_df['강수량'].sum():.0f}mm")
-                at, ae = get_ai_guide(fc_sido, int(peak['날짜'].month if hasattr(peak['날짜'],'month')
-                                                   else pd.to_datetime(peak['날짜']).month),
-                    peak['등급'], peak['ML발화확률(%)'], peak['TFRI(%)'],
-                    peak['WHI'], peak['IDA'], peak['HRI'], fc_r, openai_key)
-                if ae: st.markdown(f'<div class="ai-box">{rule_guide(peak["등급"],peak["WHI"],peak["IDA"])}</div>',
-                                   unsafe_allow_html=True)
-                else:  st.markdown(f'<div class="ai-box">{at}</div>', unsafe_allow_html=True)
+        # ══════════════════════════════════════════════════════════
+        # AI 분석 — 예보 데이터 로드 시 자동 생성
+        # ══════════════════════════════════════════════════════════
+        st.markdown("---")
+        _ai_fc_key = f"ai_fc_{fc_sido}_{st.session_state.get('lang','ko')}"
+        _ai_title  = "🤖 AI Forecast Analysis" if _is_en() else "🤖 AI 예보 분석"
+        with st.expander(f"**{_ai_title}**", expanded=True):
+            col_ai1, col_ai2 = st.columns([4,1])
+            with col_ai2:
+                if st.button("🔄" + (" Refresh" if _is_en() else " 새로 생성"),
+                             key="fc_ai_refresh", use_container_width=True):
+                    st.session_state.pop(_ai_fc_key, None)
+            with col_ai1:
+                if _base_risk is not None and _ai_fc_key not in st.session_state:
+                    peak = _base_risk.loc[_base_risk['종합위험(%)'].idxmax()]
+                    fc_r = ([f"최고기온 {_base_df['최고기온'].max():.1f}℃"]
+                            if _base_df['최고기온'].max() >= 33 else [])
+                    if _base_df['평균습도'].mean() >= 80:
+                        fc_r.append(f"평균습도 {_base_df['평균습도'].mean():.0f}%")
+                    if _base_df['강수량'].sum() >= 50:
+                        fc_r.append(f"강수합계 {_base_df['강수량'].sum():.0f}mm")
+                    _peak_month = int(peak['날짜'].month if hasattr(peak['날짜'], 'month')
+                                     else pd.to_datetime(peak['날짜']).month)
+                    if openai_key:
+                        with st.spinner("AI generating..." if _is_en() else "AI 분석 생성 중..."):
+                            at, ae = get_ai_guide(fc_sido, _peak_month, peak['등급'],
+                                peak['ML발화확률(%)'], peak['TFRI(%)'],
+                                peak['WHI'], peak['IDA'], peak['HRI'], fc_r, openai_key)
+                        st.session_state[_ai_fc_key] = (
+                            at if not ae
+                            else rule_guide(peak['등급'], peak['WHI'], peak['IDA']))
+                    else:
+                        st.session_state[_ai_fc_key] = rule_guide(
+                            peak['등급'], peak['WHI'], peak['IDA'])
+                if _ai_fc_key in st.session_state:
+                    st.markdown(f'<div class="ai-box">{st.session_state[_ai_fc_key]}</div>',
+                                unsafe_allow_html=True)
+                    if not openai_key:
+                        st.caption(T('ai_no_key'))
+                else:
+                    st.info("지역을 선택하고 **예보 불러오기** 를 클릭하세요."
+                            if not _is_en() else "Select a region and click **Load Forecast**.")
 
 # ═══════════════════════════════════════════════════════════════
 # 탭 4  복합위험 분석
