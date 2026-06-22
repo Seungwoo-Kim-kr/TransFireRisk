@@ -2437,12 +2437,24 @@ with tab4:
                 height=380, margin=dict(l=0,r=80,t=50,b=20))
             st.plotly_chart(_fig_shap, use_container_width=True)
 
-    # ── Leave-one-year-out CV ──────────────────────────────────────
+    # ── 연도별 검증 성능 (테스트셋 전용) ─────────────────────────────
     st.markdown("---")
-    _loo_title = "#### 📐 Leave-One-Year-Out 교차검증" if not _is_en() else "#### 📐 Leave-One-Year-Out CV"
+    _loo_title = "#### 📐 연도별 검증 성능 분석" if not _is_en() else "#### 📐 Year-by-Year Validation Performance"
     st.markdown(_loo_title)
-    st.caption("각 연도를 순서대로 테스트셋으로 사용 — 시계열 정보 누수 방지" if not _is_en()
-               else "Each year used as test set sequentially — prevents temporal data leakage")
+    if not _is_en():
+        st.caption(
+            "⚠️ 학습셋(2020~2022)은 훈련 데이터이므로 in-sample 참고용으로만 표시 | "
+            "**실제 검증은 테스트셋(2023~2024)만 유효** — 시계열 데이터 누수 방지"
+        )
+    else:
+        st.caption(
+            "⚠️ Train set (2020–2022): in-sample reference only | "
+            "**Valid evaluation: Test set (2023–2024) only** — temporal leakage prevented"
+        )
+
+    # 훈련/테스트 구분
+    _TRAIN_YEARS = {2020, 2021, 2022}
+    _TEST_YEARS  = {2023, 2024}
 
     _years = sorted(df['연도'].unique())
     _loo_rows = []
@@ -2453,44 +2465,96 @@ with tab4:
         if _yb_yr.sum() == 0:
             continue
         try:
-            _roc_yr  = roc_auc_score(_yb_yr, _prob_yr)
-            _pra_yr  = average_precision_score(_yb_yr, _prob_yr)
-            _yp_yr   = (_prob_yr >= 0.20).astype(int)
-            _f2_yr   = fbeta_score(_yb_yr, _yp_yr, beta=2, zero_division=0)
-            _rec_yr  = recall_score(_yb_yr, _yp_yr, zero_division=0)
-            _n_fire  = int(_yb_yr.sum())
-            _loo_rows.append({'연도': _yr, 'ROC-AUC': round(_roc_yr,3),
-                              'PR-AUC': round(_pra_yr,3), 'F2': round(_f2_yr,3),
-                              'Recall@0.20': round(_rec_yr,3), '실제화재': _n_fire})
+            _roc_yr = roc_auc_score(_yb_yr, _prob_yr)
+            _pra_yr = average_precision_score(_yb_yr, _prob_yr)
+            _yp_yr  = (_prob_yr >= 0.20).astype(int)
+            _f2_yr  = fbeta_score(_yb_yr, _yp_yr, beta=2, zero_division=0)
+            _rec_yr = recall_score(_yb_yr, _yp_yr, zero_division=0)
+            _split  = "🟢 테스트" if _yr in _TEST_YEARS else "⚪ 훈련(참고)"
+            if _is_en():
+                _split = "🟢 Test" if _yr in _TEST_YEARS else "⚪ Train (ref)"
+            _loo_rows.append({
+                '연도': _yr,
+                '구분': _split,
+                'ROC-AUC': round(_roc_yr, 3),
+                'PR-AUC':  round(_pra_yr, 3),
+                'F2':      round(_f2_yr, 3),
+                'Recall@0.20': round(_rec_yr, 3),
+                '화재건수': int(_yb_yr.sum()),
+            })
         except Exception:
             continue
 
     if _loo_rows:
         _loo_df = pd.DataFrame(_loo_rows)
+        _test_df  = _loo_df[_loo_df['연도'].isin(_TEST_YEARS)]
+        _train_df = _loo_df[_loo_df['연도'].isin(_TRAIN_YEARS)]
+
+        # 차트: 테스트셋만 실선, 훈련셋 점선 참고
         _fig_loo = go.Figure()
-        _fig_loo.add_scatter(x=_loo_df['연도'], y=_loo_df['ROC-AUC'],
-                             mode='lines+markers', name='ROC-AUC',
-                             line=dict(color='#42A5F5', width=2.5))
-        _fig_loo.add_scatter(x=_loo_df['연도'], y=_loo_df['PR-AUC'],
-                             mode='lines+markers', name='PR-AUC',
-                             line=dict(color='#EF5350', width=2.5, dash='dot'))
-        _fig_loo.add_scatter(x=_loo_df['연도'], y=_loo_df['F2'],
-                             mode='lines+markers', name='F2(β=2)',
-                             line=dict(color='#66BB6A', width=2))
+        _fig_loo.add_scatter(
+            x=_test_df['연도'], y=_test_df['ROC-AUC'],
+            mode='lines+markers', name='ROC-AUC (Test)',
+            line=dict(color='#42A5F5', width=3),
+            marker=dict(size=10))
+        _fig_loo.add_scatter(
+            x=_test_df['연도'], y=_test_df['PR-AUC'],
+            mode='lines+markers', name='PR-AUC (Test)',
+            line=dict(color='#EF5350', width=3, dash='dot'),
+            marker=dict(size=10))
+        _fig_loo.add_scatter(
+            x=_test_df['연도'], y=_test_df['F2'],
+            mode='lines+markers', name='F2(β=2) (Test)',
+            line=dict(color='#66BB6A', width=2),
+            marker=dict(size=9))
+        # 훈련 참고선 (투명)
+        _fig_loo.add_scatter(
+            x=_train_df['연도'], y=_train_df['ROC-AUC'],
+            mode='markers', name='ROC-AUC (Train, in-sample)',
+            marker=dict(color='#90CAF9', size=8, symbol='circle-open', opacity=0.5),
+            showlegend=True)
+        _note = ("※ 훈련 데이터(2020~2022)의 in-sample 스코어는 과적합으로 1.0에 근접 — "
+                 "실질적 모델 성능은 테스트셋(2023~2024) 기준" if not _is_en() else
+                 "※ Train-set in-sample scores approach 1.0 due to overfitting — "
+                 "true model performance is test-set (2023–2024) only")
+        _fig_loo.add_annotation(
+            xref='paper', yref='paper', x=0.01, y=0.05,
+            text=_note, showarrow=False,
+            font=dict(size=8, color='#FF9800'), bgcolor='rgba(255,152,0,0.1)',
+            bordercolor='#FF9800', borderwidth=1)
         _fig_loo.update_layout(
-            title='연도별 Leave-One-Year-Out 성능' if not _is_en() else 'Leave-One-Year-Out Performance',
+            title='연도별 성능 (실선=테스트셋, 빈점=훈련참고)' if not _is_en()
+                  else 'Year-by-Year Performance (solid=test, open=train ref)',
             xaxis=dict(tickvals=_loo_df['연도'].tolist()),
-            yaxis=dict(range=[0, 1.05]), height=280,
-            margin=dict(l=0,r=10,t=40,b=20))
+            yaxis=dict(range=[0, 1.05]),
+            height=310, margin=dict(l=0, r=10, t=40, b=30))
         st.plotly_chart(_fig_loo, use_container_width=True)
+
+        # 테이블: 훈련/테스트 구분 표시
         _loo_disp = _loo_df.copy()
-        if _is_en():
-            _loo_disp.columns = ['Year','ROC-AUC','PR-AUC','F2','Recall@0.20','Fire Events']
+        _col_map = ({'연도':'Year','구분':'Split','ROC-AUC':'ROC-AUC','PR-AUC':'PR-AUC',
+                     'F2':'F2','Recall@0.20':'Recall@0.20','화재건수':'Fires'}
+                    if _is_en() else
+                    {'연도':'연도','구분':'구분','ROC-AUC':'ROC-AUC','PR-AUC':'PR-AUC',
+                     'F2':'F2','Recall@0.20':'Recall@0.20','화재건수':'화재건수'})
+        _loo_disp = _loo_disp.rename(columns=_col_map)
         st.dataframe(_loo_disp, use_container_width=True, hide_index=True)
-        _avg_prauc = _loo_df['PR-AUC'].mean()
-        st.success(f"✅ " + (f"연도별 평균 PR-AUC: **{_avg_prauc:.3f}** — 특정 연도 과적합 없이 안정적으로 유지됩니다."
-                             if not _is_en() else
-                             f"Average PR-AUC across years: **{_avg_prauc:.3f}** — stable without year-specific overfitting."))
+
+        # 테스트셋 평균 (유효한 수치)
+        _avg_roc_test  = _test_df['ROC-AUC'].mean()
+        _avg_pra_test  = _test_df['PR-AUC'].mean()
+        if not _is_en():
+            st.success(f"✅ **테스트셋(2023~2024) 평균** — ROC-AUC: **{_avg_roc_test:.3f}** | "
+                       f"PR-AUC: **{_avg_pra_test:.3f}** | 합산 기준 PR-AUC: **0.122**")
+            st.info("💡 훈련 연도(2020~2022)의 ROC-AUC=1.0은 in-sample 과적합 스코어로 "
+                    "실제 모델 성능을 반영하지 않습니다. 신뢰할 수 있는 성능 지표는 "
+                    "테스트셋(2023~2024) 기준 ROC-AUC **0.640**, PR-AUC **0.122**입니다.")
+        else:
+            st.success(f"✅ **Test set (2023–2024) average** — ROC-AUC: **{_avg_roc_test:.3f}** | "
+                       f"PR-AUC: **{_avg_pra_test:.3f}** | Combined PR-AUC: **0.122**")
+            st.info("💡 Train-year (2020–2022) ROC-AUC=1.0 reflects in-sample overfitting, "
+                    "NOT true generalisation. Reliable performance: test-set ROC-AUC **0.640**, "
+                    "PR-AUC **0.122**.")
 
     # ── 향후 개선 로드맵 ──────────────────────────────────────────
     st.markdown("---")
