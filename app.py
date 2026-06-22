@@ -55,6 +55,7 @@ _TRANS: dict = {
     'tab_risk':      {'ko':'🔬 복합위험 분석',   'en':'🔬 Risk Analysis'},
     'tab_insp':      {'ko':'📋 점검 관리',       'en':'📋 Inspection Mgmt'},
     'tab_model':     {'ko':'📊 이력·모델',       'en':'📊 History & Model'},
+    'tab_sim':       {'ko':'⚙️ 시나리오 시뮬레이션', 'en':'⚙️ Scenario Simulation'},
     # 사이드바
     'sidebar_title': {'ko':'경보 현황',          'en':'Alert Status'},
     'p1_label':      {'ko':'P1 즉시 점검',       'en':'P1 Immediate'},
@@ -819,9 +820,10 @@ st.markdown(f"""
 </div>""", unsafe_allow_html=True)
 
 # ── 탭 (언어에 따라 동적 레이블) ─────────────────────────────
-tab1,tab2,tab3,tab4,tab5,tab6=st.tabs([
+tab1,tab2,tab3,tab4,tab5,tab6,tab7=st.tabs([
     T('tab_dashboard'), T('tab_region'),  T('tab_forecast'),
     T('tab_risk'),      T('tab_insp'),    T('tab_model'),
+    T('tab_sim'),
 ])
 
 # ═══════════════════════════════════════════════════════════════
@@ -1531,6 +1533,273 @@ with tab6:
 | 피처 표현력 부족 | 상호작용·편차·주기 12개 추가 |
 | 단일 모델 불안정 | 3모델 소프트 보팅 앙상블 |
 """)
+
+# ═══════════════════════════════════════════════════════════════
+# 탭 7  시나리오 시뮬레이션
+# ═══════════════════════════════════════════════════════════════
+with tab7:
+    _sim_ttl = "Scenario Simulation" if _is_en() else "시나리오 시뮬레이션"
+    st.markdown(f"## ⚙️ {_sim_ttl}")
+    st.caption(
+        "Set custom weather conditions to predict fire risk for any region and month."
+        if _is_en() else
+        "날씨 조건을 직접 설정해 원하는 지역·월의 발화 위험도를 예측합니다."
+    )
+
+    # ── 기본값: 현재 선택 지역 최근 데이터 참조 ───────────────────
+    _sc1, _sc2, _sc3 = st.columns(3)
+    with _sc1:
+        sim_sido  = st.selectbox("지역" if not _is_en() else "Region",
+                                 SIDO_LIST, key="sim_sido")
+    with _sc2:
+        sim_month = st.selectbox("월" if not _is_en() else "Month",
+                                 list(range(1,13)), index=CUR_MONTH-1,
+                                 format_func=lambda x: MONTH_KR[x], key="sim_month")
+    with _sc3:
+        _ref_row = df[(df['시도']==sim_sido)&(df['연도']==2024)&(df['월']==sim_month)]
+        if len(_ref_row)==0:
+            _ref_row = df[(df['시도']==sim_sido)&(df['월']==sim_month)].tail(1)
+        _rr = _ref_row.iloc[0] if len(_ref_row) else pd.Series()
+        st.markdown("<br>" if not _is_en() else "<br>", unsafe_allow_html=True)
+        _load_ref = st.button(
+            "2024년 실측값 불러오기" if not _is_en() else "Load 2024 reference values",
+            key="sim_load_ref", use_container_width=True)
+
+    # 실측값 불러오기 → session_state에 저장
+    if _load_ref and len(_ref_row):
+        st.session_state['sim_maxT']  = float(_rr.get('월최고기온', 25.0))
+        st.session_state['sim_avgT']  = float(_rr.get('월평균기온', 15.0))
+        st.session_state['sim_minT']  = float(_rr.get('월최저기온', 5.0))
+        st.session_state['sim_rh']    = float(_rr.get('월평균습도', 65.0))
+        st.session_state['sim_rain']  = float(_rr.get('월강수합계', 50.0))
+        st.session_state['sim_wind']  = float(_rr.get('월최대풍속', 20.0))
+        st.session_state['sim_range'] = float(_rr.get('월평균일교차', 9.0))
+        st.session_state['sim_rdays'] = int(_rr.get('강수일수', 5))
+        st.session_state['sim_hot']   = int(_rr.get('월연속고온일수', 0))
+
+    st.markdown("---")
+    st.markdown("#### " + ("Weather Conditions" if _is_en() else "기상 조건 설정"))
+
+    # ── 슬라이더 ────────────────────────────────────────────────
+    _a1, _a2, _a3 = st.columns(3)
+    with _a1:
+        sim_maxT = st.slider(
+            "최고기온 (℃)" if not _is_en() else "Max Temp (℃)",
+            -10.0, 45.0,
+            st.session_state.get('sim_maxT', float(_rr.get('월최고기온',25.0))),
+            0.5, key="sim_maxT")
+        sim_avgT = st.slider(
+            "평균기온 (℃)" if not _is_en() else "Avg Temp (℃)",
+            -20.0, 40.0,
+            st.session_state.get('sim_avgT', float(_rr.get('월평균기온',15.0))),
+            0.5, key="sim_avgT")
+        sim_minT = st.slider(
+            "최저기온 (℃)" if not _is_en() else "Min Temp (℃)",
+            -25.0, 35.0,
+            st.session_state.get('sim_minT', float(_rr.get('월최저기온',5.0))),
+            0.5, key="sim_minT")
+    with _a2:
+        sim_rh   = st.slider(
+            "평균습도 (%)" if not _is_en() else "Avg Humidity (%)",
+            20.0, 100.0,
+            st.session_state.get('sim_rh', float(_rr.get('월평균습도',65.0))),
+            1.0, key="sim_rh")
+        sim_rain = st.slider(
+            "강수합계 (mm)" if not _is_en() else "Total Precip (mm)",
+            0.0, 800.0,
+            st.session_state.get('sim_rain', float(_rr.get('월강수합계',50.0))),
+            5.0, key="sim_rain")
+        sim_wind = st.slider(
+            "최대풍속 (km/h)" if not _is_en() else "Max Wind (km/h)",
+            0.0, 80.0,
+            st.session_state.get('sim_wind', float(_rr.get('월최대풍속',20.0))),
+            1.0, key="sim_wind")
+    with _a3:
+        sim_range = st.slider(
+            "평균일교차 (℃)" if not _is_en() else "Avg Temp Range (℃)",
+            0.0, 25.0,
+            st.session_state.get('sim_range', float(_rr.get('월평균일교차',9.0))),
+            0.5, key="sim_range")
+        sim_rdays = st.slider(
+            "강수일수 (일)" if not _is_en() else "Rain Days",
+            0, 31,
+            st.session_state.get('sim_rdays', int(_rr.get('강수일수',5))),
+            1, key="sim_rdays")
+        sim_hot   = st.slider(
+            "연속고온일수 (일, ≥33℃)" if not _is_en() else "Consecutive Hot Days (≥33℃)",
+            0, 31,
+            st.session_state.get('sim_hot', int(_rr.get('월연속고온일수',0))),
+            1, key="sim_hot")
+
+    # ── 예측 실행 ────────────────────────────────────────────────
+    st.markdown("---")
+    _rdict = row_from_weather(
+        sim_sido, sim_month,
+        sim_maxT, sim_avgT, sim_minT,
+        sim_rh, sim_rain, sim_wind,
+        sim_range, sim_rdays)
+    _rdict['월연속고온일수'] = sim_hot
+
+    sim_ml   = predict_prob(_rdict)
+    sim_tfri, sim_whi, sim_ida, sim_hri = compute_tfri(
+        sim_sido, sim_month, sim_maxT, sim_avgT, sim_rh, sim_rain, sim_range)
+    sim_comp = round((sim_ml + sim_tfri) / 2, 1)
+    sim_grade = risk_grade(sim_comp)
+    sim_color = RISK_COLOR[sim_grade]
+
+    # 실측과 차이 (2024 기준)
+    ref_ml   = float(_rr.get('발화확률', sim_ml)) if len(_ref_row) else sim_ml
+    ref_tfri, *_ = compute_tfri(
+        sim_sido, sim_month,
+        float(_rr.get('월최고기온', sim_maxT)),
+        float(_rr.get('월평균기온', sim_avgT)),
+        float(_rr.get('월평균습도', sim_rh)),
+        float(_rr.get('월강수합계', sim_rain)),
+        float(_rr.get('월평균일교차', sim_range))) if len(_ref_row) else (sim_tfri,)
+    ref_comp = round((ref_ml + ref_tfri) / 2, 1)
+
+    # ── 결과 패널 ────────────────────────────────────────────────
+    _r1, _r2, _r3, _r4 = st.columns(4)
+    _r1.metric("ML 발화확률" if not _is_en() else "ML Fire Prob.",
+               f"{sim_ml:.1f}%", delta=f"{sim_ml-ref_ml:+.1f}%p")
+    _r2.metric("TFRI",
+               f"{sim_tfri:.1f}%", delta=f"{sim_tfri-ref_tfri:+.1f}%p")
+    _r3.metric("종합위험도" if not _is_en() else "Combined Risk",
+               f"{sim_comp:.1f}%", delta=f"{sim_comp-ref_comp:+.1f}%p")
+    _r4.metric("위험등급" if not _is_en() else "Risk Grade",
+               G(sim_grade))
+
+    st.caption("delta = 2024년 실측 대비 변화량" if not _is_en()
+               else "delta = change vs. 2024 reference values")
+
+    # ── 대형 위험도 카드 ─────────────────────────────────────────
+    st.markdown(f"""
+    <div style="background:{RISK_BG[sim_grade]};border:3px solid {sim_color};
+      border-radius:12px;padding:20px 28px;text-align:center;margin:8px 0">
+      <div style="font-size:0.85rem;color:#666">{S(sim_sido)} · {Mn(sim_month)} — 시뮬레이션 결과</div>
+      <div style="font-size:3.8rem;font-weight:900;color:{RISK_TEXT[sim_grade]};line-height:1.1">
+        {sim_comp:.0f}%</div>
+      <div style="font-size:1.2rem;font-weight:700;color:{RISK_TEXT[sim_grade]}">
+        {RISK_EMOJI[sim_grade]} {G(sim_grade)}</div>
+    </div>""", unsafe_allow_html=True)
+
+    # ── 성분 분해 차트 ──────────────────────────────────────────
+    st.markdown("---")
+    _ch1, _ch2 = st.columns(2)
+    with _ch1:
+        _comp_df = pd.DataFrame({
+            '성분' if not _is_en() else 'Component':
+                ['WHI', 'IDA', 'HRI', 'TFRI', 'ML', '종합' if not _is_en() else 'Combined'],
+            '값' if not _is_en() else 'Value':
+                [sim_whi, sim_ida, sim_hri, sim_tfri, sim_ml, sim_comp],
+        })
+        _clrs = ['#1976D2','#D32F2F','#388E3C','#7B1FA2','#0288D1','#000000']
+        _fig = px.bar(_comp_df,
+                      x='값' if not _is_en() else 'Value',
+                      y='성분' if not _is_en() else 'Component',
+                      orientation='h', color='성분' if not _is_en() else 'Component',
+                      color_discrete_sequence=_clrs,
+                      text=(_comp_df['값' if not _is_en() else 'Value']
+                            .apply(lambda x: f"{x:.1f}")),
+                      title='위험 성분 분해' if not _is_en() else 'Risk Component Breakdown')
+        _fig.update_traces(textposition='outside')
+        _fig.update_layout(height=320, xaxis=dict(range=[0,120]),
+                           showlegend=False, margin=dict(l=0,r=60,t=40,b=20))
+        st.plotly_chart(_fig, use_container_width=True)
+
+    with _ch2:
+        _fig2 = go.Figure(go.Scatterpolar(
+            r=[sim_whi, sim_ida, sim_hri, sim_ml, sim_comp],
+            theta=(['WHI 기상','IDA 절연열화','HRI 이력','ML 발화확률','종합위험']
+                   if not _is_en() else
+                   ['WHI Weather','IDA Insulation','HRI History','ML Prob.','Combined']),
+            fill='toself', fillcolor=_hex_rgba(sim_color, 0.18),
+            line=dict(color=sim_color, width=2.5)))
+        _fig2.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0,100])),
+            title='위험 레이더' if not _is_en() else 'Risk Radar',
+            height=320, margin=dict(l=20,r=20,t=50,b=20), showlegend=False)
+        st.plotly_chart(_fig2, use_container_width=True)
+
+    # ── 민감도 분석: 기온 vs 습도 히트맵 ──────────────────────────
+    st.markdown("---")
+    st.markdown("#### " + ("Sensitivity Analysis — Max Temp × Humidity"
+                           if _is_en() else "민감도 분석 — 최고기온 × 평균습도"))
+    st.caption("다른 조건은 현재 슬라이더 값 고정, 기온·습도만 변화시킨 종합위험도" if not _is_en()
+               else "All other conditions fixed; varying temp and humidity only.")
+
+    _temps = list(range(15, 46, 3))
+    _rhums = list(range(40, 101, 10))
+    _heat  = []
+    for _tt in _temps:
+        _row = []
+        for _rh in _rhums:
+            _rd = row_from_weather(sim_sido, sim_month, _tt,
+                                   _tt - sim_range, _tt - sim_range * 2,
+                                   _rh, sim_rain, sim_wind, sim_range, sim_rdays)
+            _rd['월연속고온일수'] = max(0, int((_tt - 33) * 2)) if _tt > 33 else 0
+            _ml = predict_prob(_rd)
+            _tf, *_ = compute_tfri(sim_sido, sim_month, _tt, _tt - sim_range, _rh, sim_rain, sim_range)
+            _row.append(round((_ml + _tf) / 2, 1))
+        _heat.append(_row)
+
+    _hm_df = pd.DataFrame(_heat, index=[f"{t}℃" for t in _temps],
+                           columns=[f"{r}%" for r in _rhums])
+    _fig3 = px.imshow(_hm_df, color_continuous_scale='RdYlGn_r',
+                      zmin=0, zmax=80,
+                      labels=dict(x="평균습도" if not _is_en() else "Humidity",
+                                  y="최고기온" if not _is_en() else "Max Temp",
+                                  color="종합위험(%)" if not _is_en() else "Combined Risk(%)"),
+                      title="종합위험도 히트맵 (기온 × 습도)" if not _is_en()
+                            else "Combined Risk Heatmap (Temp × Humidity)")
+    _fig3.update_layout(height=380, margin=dict(l=0,r=10,t=50,b=20))
+    # 현재 슬라이더 위치 표시
+    _fig3.add_scatter(
+        x=[f"{int(round(sim_rh/10)*10)}%"],
+        y=[f"{int(round(sim_maxT/3)*3)}℃"],
+        mode='markers', marker=dict(size=14, color='black', symbol='x'),
+        name='현재 조건' if not _is_en() else 'Current')
+    st.plotly_chart(_fig3, use_container_width=True)
+
+    # ── AI 분석 ─────────────────────────────────────────────────
+    st.markdown("---")
+    _ai_sim_key = f"ai_sim_{sim_sido}_{sim_month}_{sim_comp:.0f}_{st.session_state.get('lang','ko')}"
+    _ai_sim_ttl = "🤖 AI 분석" if not _is_en() else "🤖 AI Analysis"
+    with st.expander(f"**{_ai_sim_ttl}**", expanded=True):
+        if _ai_sim_key not in st.session_state:
+            _sim_reasons = []
+            if sim_maxT >= 33: _sim_reasons.append(f"최고기온 {sim_maxT:.1f}℃")
+            if sim_rh >= 80:   _sim_reasons.append(f"평균습도 {sim_rh:.0f}%")
+            if sim_rain >= 100: _sim_reasons.append(f"강수합계 {sim_rain:.0f}mm")
+            if sim_hot >= 3:   _sim_reasons.append(f"연속고온 {sim_hot}일")
+            if openai_key:
+                with st.spinner("AI 분석 생성 중..." if not _is_en() else "Generating..."):
+                    _at, _ae = get_ai_guide(sim_sido, sim_month, sim_grade,
+                                            sim_ml, sim_tfri, sim_whi, sim_ida,
+                                            sim_hri, _sim_reasons, openai_key)
+                st.session_state[_ai_sim_key] = (
+                    _at if not _ae else rule_guide(sim_grade, sim_whi, sim_ida))
+            else:
+                st.session_state[_ai_sim_key] = rule_guide(sim_grade, sim_whi, sim_ida)
+        st.markdown(f'<div class="ai-box">{st.session_state[_ai_sim_key]}</div>',
+                    unsafe_allow_html=True)
+        if not openai_key: st.caption(T('ai_no_key'))
+
+    # ── CSV 내보내기 ─────────────────────────────────────────────
+    st.markdown("---")
+    _sim_out = pd.DataFrame([{
+        '지역': sim_sido, '월': sim_month,
+        '최고기온': sim_maxT, '평균기온': sim_avgT, '최저기온': sim_minT,
+        '평균습도': sim_rh, '강수합계': sim_rain, '최대풍속': sim_wind,
+        '평균일교차': sim_range, '강수일수': sim_rdays, '연속고온일수': sim_hot,
+        'ML발화확률(%)': sim_ml, 'TFRI(%)': sim_tfri, '종합위험(%)': sim_comp,
+        'WHI': sim_whi, 'IDA': sim_ida, 'HRI': sim_hri, '위험등급': sim_grade,
+    }])
+    st.download_button(
+        "시뮬레이션 결과 CSV 내보내기" if not _is_en() else "Export Simulation Result (CSV)",
+        data=_sim_out.to_csv(index=False, encoding='utf-8-sig'),
+        file_name=f"sim_{sim_sido}_{sim_month}월_{sim_comp:.0f}pct.csv",
+        mime='text/csv')
 
 st.markdown("---")
 st.caption("⚡ **TransFireRisk IMS v7.0**  |  모델: 앙상블 v3 (XGB+RF+LR) · 28피처  |  "
