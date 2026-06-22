@@ -838,21 +838,16 @@ with tab1:
     # ── AI 운영 브리핑 ─────────────────────────────────────────
     _brief_key = f"briefing_{view_month}_{st.session_state.get('lang','ko')}"
     with st.expander(f"**{T('ai_briefing')}**", expanded=True):
-        col_b1, col_b2 = st.columns([4,1])
-        with col_b2:
-            if st.button(T('ai_refresh'), key="brief_refresh", use_container_width=True):
-                st.session_state.pop(_brief_key, None)
-        with col_b1:
-            if _brief_key not in st.session_state:
-                if openai_key:
-                    with st.spinner("AI generating briefing..."):
-                        brief = get_ai_briefing(baseline, view_month, CUR_YEAR, openai_key)
-                    st.session_state[_brief_key] = brief or rule_briefing(baseline, view_month)
-                else:
-                    st.session_state[_brief_key] = rule_briefing(baseline, view_month)
-            st.markdown(st.session_state[_brief_key])
-            if not openai_key:
-                st.caption(T('ai_no_key'))
+        if _brief_key not in st.session_state:
+            if openai_key:
+                with st.spinner("AI generating briefing..."):
+                    brief = get_ai_briefing(baseline, view_month, CUR_YEAR, openai_key)
+                st.session_state[_brief_key] = brief or rule_briefing(baseline, view_month)
+            else:
+                st.session_state[_brief_key] = rule_briefing(baseline, view_month)
+        st.markdown(st.session_state[_brief_key])
+        if not openai_key:
+            st.caption(T('ai_no_key'))
     st.markdown("---")
 
     prev_base=get_baseline(view_month-1 if view_month>1 else 12)
@@ -951,28 +946,22 @@ with tab2:
     _ai_det_key = f"ai_det_{sel_sido}_{sel_month}_{st.session_state.get('lang','ko')}"
     _ai_det_ttl = "🤖 AI 분석" if not _is_en() else "🤖 AI Analysis"
     with st.expander(f"**{_ai_det_ttl}**", expanded=True):
-        _col_det1, _col_det2 = st.columns([4,1])
-        with _col_det2:
-            if st.button("🔄" + (" Refresh" if _is_en() else " 새로 생성"),
-                         key="det_ai_refresh", use_container_width=True):
-                st.session_state.pop(_ai_det_key, None)
-        with _col_det1:
-            if _ai_det_key not in st.session_state:
-                _reasons_det = []
-                if r.get('월최고기온',0) >= 33: _reasons_det.append(f"최고기온 {r['월최고기온']:.1f}℃")
-                if r.get('월평균습도',0) >= 80:  _reasons_det.append(f"평균습도 {r['월평균습도']:.0f}%")
-                if r.get('월강수합계',0) >= 100: _reasons_det.append(f"강수합계 {r['월강수합계']:.0f}mm")
-                if sel_month in [7,8]:           _reasons_det.append("7·8월 고위험 시기")
-                if openai_key:
-                    with st.spinner("AI 분석 생성 중..." if not _is_en() else "Generating..."):
-                        _at, _ae = get_ai_guide(sel_sido, sel_month, grade, ml_pct, t,
-                                                whi, ida, hri, _reasons_det, openai_key)
-                    st.session_state[_ai_det_key] = _at if not _ae else rule_guide(grade,whi,ida)
-                else:
-                    st.session_state[_ai_det_key] = rule_guide(grade, whi, ida)
-            st.markdown(f'<div class="ai-box">{st.session_state[_ai_det_key]}</div>',
-                        unsafe_allow_html=True)
-            if not openai_key: st.caption(T('ai_no_key'))
+        if _ai_det_key not in st.session_state:
+            _reasons_det = []
+            if r.get('월최고기온',0) >= 33: _reasons_det.append(f"최고기온 {r['월최고기온']:.1f}℃")
+            if r.get('월평균습도',0) >= 80:  _reasons_det.append(f"평균습도 {r['월평균습도']:.0f}%")
+            if r.get('월강수합계',0) >= 100: _reasons_det.append(f"강수합계 {r['월강수합계']:.0f}mm")
+            if sel_month in [7,8]:           _reasons_det.append("7·8월 고위험 시기")
+            if openai_key:
+                with st.spinner("AI 분석 생성 중..." if not _is_en() else "Generating..."):
+                    _at, _ae = get_ai_guide(sel_sido, sel_month, grade, ml_pct, t,
+                                            whi, ida, hri, _reasons_det, openai_key)
+                st.session_state[_ai_det_key] = _at if not _ae else rule_guide(grade, whi, ida)
+            else:
+                st.session_state[_ai_det_key] = rule_guide(grade, whi, ida)
+        st.markdown(f'<div class="ai-box">{st.session_state[_ai_det_key]}</div>',
+                    unsafe_allow_html=True)
+        if not openai_key: st.caption(T('ai_no_key'))
     st.markdown("---")
 
     col_big,col_right=st.columns([1,1])
@@ -1105,40 +1094,34 @@ with tab3:
         _ai_fc_key = f"ai_fc_{fc_sido}_{st.session_state.get('lang','ko')}"
         _ai_title  = "🤖 AI 분석" if not _is_en() else "🤖 AI Analysis"
         with st.expander(f"**{_ai_title}**", expanded=True):
-            _col_fc1, _col_fc2 = st.columns([4,1])
-            with _col_fc2:
-                if st.button("🔄" + (" Refresh" if _is_en() else " 새로 생성"),
-                             key="fc_ai_refresh", use_container_width=True):
-                    st.session_state.pop(_ai_fc_key, None)
-            with _col_fc1:
-                if _base_risk is not None and _ai_fc_key not in st.session_state:
-                    _peak = _base_risk.loc[_base_risk['종합위험(%)'].idxmax()]
-                    _fc_r = ([f"최고기온 {_base_df['최고기온'].max():.1f}℃"]
-                             if _base_df['최고기온'].max() >= 33 else [])
-                    if _base_df['평균습도'].mean() >= 80:
-                        _fc_r.append(f"평균습도 {_base_df['평균습도'].mean():.0f}%")
-                    if _base_df['강수량'].sum() >= 50:
-                        _fc_r.append(f"강수합계 {_base_df['강수량'].sum():.0f}mm")
-                    _pk_month = int(_peak['날짜'].month if hasattr(_peak['날짜'], 'month')
-                                    else pd.to_datetime(_peak['날짜']).month)
-                    if openai_key:
-                        with st.spinner("AI 분석 생성 중..." if not _is_en() else "Generating..."):
-                            _at, _ae = get_ai_guide(fc_sido, _pk_month, _peak['등급'],
-                                _peak['ML발화확률(%)'], _peak['TFRI(%)'],
-                                _peak['WHI'], _peak['IDA'], _peak['HRI'], _fc_r, openai_key)
-                        st.session_state[_ai_fc_key] = (
-                            _at if not _ae
-                            else rule_guide(_peak['등급'], _peak['WHI'], _peak['IDA']))
-                    else:
-                        st.session_state[_ai_fc_key] = rule_guide(
-                            _peak['등급'], _peak['WHI'], _peak['IDA'])
-                if _ai_fc_key in st.session_state:
-                    st.markdown(f'<div class="ai-box">{st.session_state[_ai_fc_key]}</div>',
-                                unsafe_allow_html=True)
-                    if not openai_key: st.caption(T('ai_no_key'))
+            if _base_risk is not None and _ai_fc_key not in st.session_state:
+                _peak = _base_risk.loc[_base_risk['종합위험(%)'].idxmax()]
+                _fc_r = ([f"최고기온 {_base_df['최고기온'].max():.1f}℃"]
+                         if _base_df['최고기온'].max() >= 33 else [])
+                if _base_df['평균습도'].mean() >= 80:
+                    _fc_r.append(f"평균습도 {_base_df['평균습도'].mean():.0f}%")
+                if _base_df['강수량'].sum() >= 50:
+                    _fc_r.append(f"강수합계 {_base_df['강수량'].sum():.0f}mm")
+                _pk_month = int(_peak['날짜'].month if hasattr(_peak['날짜'], 'month')
+                                else pd.to_datetime(_peak['날짜']).month)
+                if openai_key:
+                    with st.spinner("AI 분석 생성 중..." if not _is_en() else "Generating..."):
+                        _at, _ae = get_ai_guide(fc_sido, _pk_month, _peak['등급'],
+                            _peak['ML발화확률(%)'], _peak['TFRI(%)'],
+                            _peak['WHI'], _peak['IDA'], _peak['HRI'], _fc_r, openai_key)
+                    st.session_state[_ai_fc_key] = (
+                        _at if not _ae
+                        else rule_guide(_peak['등급'], _peak['WHI'], _peak['IDA']))
                 else:
-                    st.info("지역을 선택하고 **예보 불러오기** 를 클릭하세요."
-                            if not _is_en() else "Select a region and click **Load Forecast**.")
+                    st.session_state[_ai_fc_key] = rule_guide(
+                        _peak['등급'], _peak['WHI'], _peak['IDA'])
+            if _ai_fc_key in st.session_state:
+                st.markdown(f'<div class="ai-box">{st.session_state[_ai_fc_key]}</div>',
+                            unsafe_allow_html=True)
+                if not openai_key: st.caption(T('ai_no_key'))
+            else:
+                st.info("지역을 선택하고 **예보 불러오기** 를 클릭하세요."
+                        if not _is_en() else "Select a region and click **Load Forecast**.")
 
         st.markdown("---")
 
