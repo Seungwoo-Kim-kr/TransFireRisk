@@ -154,71 +154,132 @@ def Mn(month: int) -> str:
 #  AI 운영 브리핑
 # ══════════════════════════════════════════════════════════════
 def get_ai_briefing(baseline, month, year, api_key: str) -> str | None:
-    """전국 현황을 GPT로 요약해 운영 브리핑 생성"""
+    """전국 현황 GPT 운영 브리핑"""
     if not _OPENAI_PKG or not api_key:
         return None
     lang_key = 'en' if st.session_state.get('lang','한국어') == 'English' else 'ko'
-    top3  = baseline.head(3)
-    vh    = baseline[baseline['등급']=='매우높음']['시도'].tolist()
-    hi    = baseline[baseline['등급']=='높음']['시도'].tolist()
-    avg   = baseline['종합위험'].mean()
-    top3_str = ', '.join(f"{r['시도']} {r['종합위험']:.0f}%" for _,r in top3.iterrows())
+    vh   = baseline[baseline['등급']=='매우높음']['시도'].tolist()
+    hi   = baseline[baseline['등급']=='높음']['시도'].tolist()
+    avg  = baseline['종합위험'].mean()
+    all_regions = '\n'.join(
+        f"  - {r['시도']}: {r['종합위험']:.0f}% ({r['등급']})"
+        for _, r in baseline.iterrows()
+    )
 
     if lang_key == 'en':
-        prompt = f"""You are a power facility fire risk analyst (KEPCO).
-Write a concise operational briefing (≤120 words) for {datetime(year,month,1).strftime('%B %Y')}.
+        month_label = datetime(year, month, 1).strftime('%B %Y')
+        system_msg = (
+            "You are a power infrastructure safety analyst at KEPCO. "
+            "Write concise, technical operational briefings in the style of a utility risk assessment report. "
+            "Rules: no emojis, no casual tone. Use **bold** only for region names and key thresholds. "
+            "Output in plain paragraphs under labeled sections."
+        )
+        user_msg = f"""Produce the {month_label} national transformer fire risk briefing.
 
-Data:
-- National avg combined risk: {avg:.1f}%
-- P1 Immediate inspection: {', '.join(vh) if vh else 'None'}
-- P2 Caution: {', '.join(hi) if hi else 'None'}
-- Top 3 regions: {top3_str}
+Input data:
+- National average combined risk: {avg:.1f}%
+- P1 — Immediate inspection required: {', '.join(vh) if vh else 'None'}
+- P2 — Caution (elevated risk): {', '.join(hi) if hi else 'None'}
+- All 17 regions:
+{all_regions}
 
-Format: 3 short paragraphs — ① overall risk level, ② priority regions & reason, ③ top 2 action items."""
+Output exactly these three sections (no emojis, bold for emphasis only):
+
+Risk Assessment
+[One sentence stating the national risk level and whether it is elevated compared to baseline. Include the average score.]
+
+Priority Response
+[For each P1 region, one line: region name — risk score — primary physical driver. If no P1, state that.]
+[For P2 regions, brief one-line mention.]
+
+Recommended Actions
+1. [Specific action — which equipment, which standard to check]
+2. [Specific action — weather or load-related measure]"""
+
     else:
-        prompt = f"""당신은 KEPCO 전력설비 화재 위험 분석 전문가입니다.
-{year}년 {month}월 운영 브리핑을 120자 이내로 작성하세요.
+        system_msg = (
+            "당신은 KEPCO 전력설비 안전 분석 전문가입니다. "
+            "전력 유틸리티 리스크 평가 보고서 형식의 간결하고 기술적인 운영 브리핑을 작성합니다. "
+            "규칙: 이모지 사용 금지, 구어체 금지. **볼드**는 지역명·핵심 수치에만 사용합니다. "
+            "각 섹션은 지정된 제목 아래 단락으로 작성합니다."
+        )
+        user_msg = f"""{year}년 {month}월 전국 변압기 화재 위험 브리핑을 작성하세요.
 
-데이터:
+입력 데이터:
 - 전국 평균 종합위험도: {avg:.1f}%
-- P1 즉시 점검 필요: {', '.join(vh) if vh else '없음'}
-- P2 주의: {', '.join(hi) if hi else '없음'}
-- 상위 3개 지역: {top3_str}
+- P1 (즉시 점검): {', '.join(vh) if vh else '없음'}
+- P2 (주의): {', '.join(hi) if hi else '없음'}
+- 전국 17개 시도:
+{all_regions}
 
-3개 단락으로 작성: ① 전반적 위험 수준, ② 우선 대응 지역과 이유, ③ 핵심 조치 2가지."""
+아래 세 섹션을 정확히 출력하세요 (이모지 없이, 볼드는 강조에만):
+
+위험 수준 평가
+[전국 위험 수준과 평균 점수를 포함해 한 문장으로 작성합니다.]
+
+우선 대응
+[P1 지역별로 한 줄씩: 지역명 — 위험도 — 주요 물리적 원인. P1이 없으면 해당 없음으로 표기.]
+[P2 지역은 간략히 한 줄로 언급.]
+
+권고 조치
+1. [구체적인 조치 — 대상 설비, 확인 기준 포함]
+2. [기상 또는 부하 관련 조치]"""
 
     try:
         client = OpenAI(api_key=api_key)
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],
-            max_tokens=250, temperature=0.3,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user",   "content": user_msg},
+            ],
+            max_tokens=400, temperature=0.2,
         )
         return resp.choices[0].message.content
     except Exception:
         return None
 
+
 def rule_briefing(baseline, month) -> str:
-    """GPT 없을 때 규칙 기반 요약"""
+    """API 없을 때 구조화된 규칙 기반 브리핑"""
     lang_key = 'en' if st.session_state.get('lang','한국어') == 'English' else 'ko'
-    vh = baseline[baseline['등급']=='매우높음']['시도'].tolist()
-    hi = baseline[baseline['등급']=='높음']['시도'].tolist()
+    vh  = baseline[baseline['등급']=='매우높음']['시도'].tolist()
+    hi  = baseline[baseline['등급']=='높음']['시도'].tolist()
     avg = baseline['종합위험'].mean()
+
     if lang_key == 'en':
-        level = "HIGH" if avg>=30 else "MODERATE" if avg>=20 else "LOW"
-        parts = [f"**{datetime(2026,month,1).strftime('%B')} Risk Level: {level}** (avg {avg:.1f}%)."]
-        if vh: parts.append(f"Immediate inspection required: **{', '.join(vh)}**.")
-        if hi: parts.append(f"Monitor closely: {', '.join(hi)}.")
-        if not vh and not hi: parts.append("No high-risk regions detected.")
-        parts.append("Recommendation: Inspect cooling systems & insulation on high-load transformers.")
+        level = "HIGH" if avg >= 30 else "MODERATE" if avg >= 20 else "LOW"
+        lines = [
+            f"Risk Assessment\n"
+            f"The national average combined risk index for this month stands at "
+            f"**{avg:.1f}%**, corresponding to an overall **{level}** level.",
+
+            "Priority Response\n"
+            + (('\n'.join(f"- **{s}**: Immediate inspection required (≥40% fire probability)."
+                         for s in vh)) if vh else "No P1 regions this month.")
+            + ('\n' + '\n'.join(f"- **{s}**: Elevated risk — monitor closely." for s in hi) if hi else ""),
+
+            "Recommended Actions\n"
+            "1. Inspect cooling fans, heat exchangers, and insulation resistance on high-load transformers "
+            "(acceptance: ≥1 GΩ at 1 kV).\n"
+            "2. Review busbar and terminal heat patterns via IR camera; tighten or replace as needed.",
+        ]
     else:
-        level = "높음" if avg>=30 else "보통" if avg>=20 else "낮음"
-        parts = [f"**{month}월 전국 위험 수준: {level}** (평균 {avg:.1f}%)."]
-        if vh: parts.append(f"즉시 점검 권고: **{', '.join(vh)}**.")
-        if hi: parts.append(f"주의 지역: {', '.join(hi)}.")
-        if not vh and not hi: parts.append("고위험 지역 없음.")
-        parts.append("권고: 고부하 변압기 냉각 설비 및 절연 상태 점검.")
-    return "  \n".join(parts)
+        level = "높음" if avg >= 30 else "보통" if avg >= 20 else "낮음"
+        lines = [
+            f"위험 수준 평가\n"
+            f"이번 달 전국 평균 종합위험도는 **{avg:.1f}%**로, 전반적인 위험 수준은 **{level}**입니다.",
+
+            "우선 대응\n"
+            + (('\n'.join(f"- **{s}**: 즉시 점검 필요 (발화 확률 40% 이상)." for s in vh))
+               if vh else "이번 달 P1 해당 지역 없음.")
+            + ('\n' + '\n'.join(f"- **{s}**: 위험 상승 — 집중 모니터링." for s in hi) if hi else ""),
+
+            "권고 조치\n"
+            "1. 고부하 변압기 냉각팬·방열기 점검 및 절연 저항 측정 (기준: 1kV 인가 시 ≥1 GΩ).\n"
+            "2. IR 카메라로 부스바·단자 발열 여부 확인 후 필요 시 체결 보강 또는 교체.",
+        ]
+    return "\n\n".join(lines)
 
 st.set_page_config(
     page_title="TransFireRisk IMS",
@@ -548,38 +609,158 @@ def compute_forecast_risk(fc_df, sido):
                      '출처':row.get('출처','')})
     return pd.DataFrame(rows)
 
-# ── GPT 가이드 ────────────────────────────────────────────────
+# ── GPT 점검 가이드 ───────────────────────────────────────────
 def get_ai_guide(sido, month, grade, ml_pct, tfri_pct, whi, ida, hri, reasons, api_key):
-    if not _OPENAI_PKG or not api_key: return None,"API KEY 없음"
-    try:
-        client=OpenAI(api_key=api_key)
-        prompt=f"""당신은 KEPCO 전력설비 화재 예방 전문가 (IEC 60076-7·CIGRE 기준 정통)입니다.
+    if not _OPENAI_PKG or not api_key: return None, "API KEY 없음"
+    lang_key = 'en' if st.session_state.get('lang', '한국어') == 'English' else 'ko'
+    combined = round((ml_pct + tfri_pct) / 2, 1)
 
-지역={sido}, {month}월, 위험등급={grade}
-ML 발화확률={ml_pct:.1f}%  TFRI={tfri_pct:.1f}%  종합={(ml_pct+tfri_pct)/2:.1f}%
-WHI={whi:.1f} / IDA={ida:.1f} / HRI={hri:.1f}
+    if lang_key == 'en':
+        system_msg = (
+            "You are a senior electrical engineer specializing in transformer fire prevention, "
+            "with deep expertise in IEC 60076-7 and CIGRE WG A2.49. "
+            "Produce concise, field-ready technical inspection guides for KEPCO field engineers. "
+            "Rules: no emojis, technical and factual tone only. "
+            "Use **bold** for acceptance criteria and critical thresholds. "
+            "Each section must be short and directly actionable."
+        )
+        user_msg = f"""Region: {sido} | Month: {month}
+Risk grade: {grade} | ML fire probability: {ml_pct:.1f}% | TFRI: {tfri_pct:.1f}% | Combined: {combined:.1f}%
+WHI (weather hazard index): {whi:.1f} | IDA (insulation degradation): {ida:.1f} | HRI (historical risk): {hri:.1f}
+Key risk drivers: {', '.join(reasons) if reasons else 'None identified'}
+
+Write a field inspection brief with these four sections (no emojis):
+
+Risk Mechanism
+[2 sentences explaining the dominant physical cause of elevated risk based on WHI/IDA/HRI values and the risk drivers above.]
+
+Immediate Inspection Checklist
+- [Equipment item]: [acceptance criterion in bold, e.g. **≥1 GΩ at 1 kV**]
+- [Equipment item]: [acceptance criterion]
+- [Equipment item]: [acceptance criterion]
+- [Equipment item]: [acceptance criterion]
+
+Maintenance Plan — Month {month}
+[2 sentences on specific maintenance priorities given the current risk level and season.]
+
+Weather Response
+[2 sentences on operational adjustments specific to current weather conditions.]"""
+
+    else:
+        system_msg = (
+            "당신은 IEC 60076-7·CIGRE WG A2.49 기반의 변압기 화재 예방 전문 전기 엔지니어입니다. "
+            "KEPCO 현장 기술자를 위한 간결하고 즉시 실행 가능한 점검 가이드를 작성합니다. "
+            "규칙: 이모지 사용 절대 금지, 기술적·사실적 어조 유지. "
+            "**볼드**는 허용 기준값과 핵심 임계치에만 사용합니다. "
+            "각 섹션은 짧고 직접적으로 작성합니다."
+        )
+        user_msg = f"""지역: {sido} | 월: {month}월
+위험등급: {grade} | ML 발화확률: {ml_pct:.1f}% | TFRI: {tfri_pct:.1f}% | 종합: {combined:.1f}%
+WHI (기상위험지수): {whi:.1f} | IDA (절연열화가속도): {ida:.1f} | HRI (이력위험지수): {hri:.1f}
 주요 위험 요인: {', '.join(reasons) if reasons else '없음'}
 
-아래 4항목을 각각 2~3줄 실무 중심으로 작성하세요:
-### 🔍 위험 메커니즘
-### ✅ 즉시 점검 항목 (bullet 3~4개, 기준값 포함)
-### 🔧 이번 달 정비 계획
-### 🌦️ 기상 대응 조치"""
-        resp=client.chat.completions.create(model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],max_tokens=600,temperature=0.25)
-        return resp.choices[0].message.content,None
-    except Exception as e: return None,str(e)
+아래 네 섹션으로 현장 점검 브리핑을 작성하세요 (이모지 없이):
+
+위험 메커니즘
+[WHI/IDA/HRI 수치와 위험 요인을 근거로 위험 상승의 주요 물리적 원인을 2문장으로 설명합니다.]
+
+즉시 점검 항목
+- [설비 항목]: [허용 기준을 볼드로 표기, 예: **1kV 인가 시 ≥1 GΩ**]
+- [설비 항목]: [허용 기준]
+- [설비 항목]: [허용 기준]
+- [설비 항목]: [허용 기준]
+
+{month}월 정비 계획
+[현재 위험 등급과 계절을 고려한 구체적인 정비 우선순위를 2문장으로 작성합니다.]
+
+기상 대응 조치
+[현재 기상 조건에 따른 운전 조정 사항을 2문장으로 작성합니다.]"""
+
+    try:
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user",   "content": user_msg},
+            ],
+            max_tokens=600, temperature=0.2,
+        )
+        return resp.choices[0].message.content, None
+    except Exception as e:
+        return None, str(e)
+
 
 def rule_guide(grade, whi, ida):
-    base={'낮음':'정기 점검 주기를 유지하세요.',
-          '보통':'취약 설비를 집중 모니터링하세요.',
-          '높음':'부하율 높은 변압기를 즉시 점검하고 비상 대응 체계를 가동하세요.',
-          '매우높음':'즉각 특별 점검 및 24시간 감시 체계를 구축하세요.'}.get(grade,'')
-    items=['절연저항 측정(기준:≥1GΩ@1kV)','부스바·단자 발열 점검(IR카메라)']
-    if whi>60: items+=['냉각팬·방열기 작동 점검','부하 분산 및 과부하 차단기 검토']
-    if ida>50: items+=['절연유 내전압 측정(기준:≥30kV/2.5mm)','흡습 브리더·실리카겔 교체']
-    if whi>40: items+=['방수 패킹·케이블 관통부 실링 점검']
-    return f"**{base}**\n\n**권장 점검 항목:**\n"+"\n".join(f"- {i}" for i in items[:5])
+    """API 없을 때 구조화된 규칙 기반 점검 가이드"""
+    _en = st.session_state.get('lang', '한국어') == 'English'
+
+    if _en:
+        overview = {
+            '낮음':    "Risk is within normal range. Maintain the regular inspection schedule.",
+            '보통':    "Risk is moderately elevated. Focus monitoring on vulnerable equipment.",
+            '높음':    "Risk is high. Initiate immediate inspection of high-load transformers and activate emergency response protocols.",
+            '매우높음':"Risk is critical. Execute emergency special inspection and establish 24-hour monitoring.",
+        }.get(grade, "")
+        items = [
+            "Insulation resistance measurement: **≥1 GΩ at 1 kV (DC)**",
+            "Busbar and terminal thermal scan via IR camera: **ΔT < 10 K above ambient**",
+        ]
+        if whi > 60: items += [
+            "Cooling fan and heat exchanger operational check: confirm airflow and coolant level",
+            "Load redistribution review: verify no transformer exceeds **85% rated capacity**",
+        ]
+        if ida > 50: items += [
+            "Insulating oil dielectric strength: **≥30 kV / 2.5 mm gap**",
+            "Moisture breather and silica gel condition: replace if color-indicator saturated",
+        ]
+        if whi > 40: items.append(
+            "Cable entry seals and weatherproof gaskets: verify integrity, reseal if cracked"
+        )
+        return (
+            f"Risk Mechanism\n{overview}\n\n"
+            f"Immediate Inspection Checklist\n"
+            + "\n".join(f"- {i}" for i in items[:5]) + "\n\n"
+            f"Maintenance Plan\n"
+            "Prioritize transformers with the highest load factor this month. "
+            "Schedule oil sampling and DGA analysis for units rated above 154 kV.\n\n"
+            f"Weather Response\n"
+            "Increase patrol frequency during high-temperature or high-humidity periods. "
+            "Pre-position spare cooling units at P1 substations."
+        )
+    else:
+        overview = {
+            '낮음':    "현재 위험은 정상 범위 내에 있습니다. 정기 점검 주기를 유지합니다.",
+            '보통':    "위험이 소폭 상승했습니다. 취약 설비를 집중 모니터링합니다.",
+            '높음':    "위험이 높은 상태입니다. 고부하 변압기를 즉시 점검하고 비상 대응 체계를 가동합니다.",
+            '매우높음':"위험이 임계 수준입니다. 비상 특별 점검을 즉시 시행하고 24시간 감시 체계를 구축합니다.",
+        }.get(grade, "")
+        items = [
+            "절연 저항 측정: **DC 1kV 인가 시 ≥1 GΩ**",
+            "부스바·단자 IR 열화상 점검: **주변 온도 대비 ΔT < 10 K**",
+        ]
+        if whi > 60: items += [
+            "냉각팬·방열기 작동 확인: 풍량 및 냉각유 수위 점검",
+            "부하 분산 검토: 변압기별 **정격 용량의 85% 이하** 유지 여부 확인",
+        ]
+        if ida > 50: items += [
+            "절연유 내전압 측정: **2.5mm 간격 기준 ≥30 kV**",
+            "흡습 브리더·실리카겔 상태 점검: 색변 포화 시 즉시 교체",
+        ]
+        if whi > 40: items.append(
+            "케이블 관통부 실링·방수 패킹 점검: 균열 발견 시 재실링"
+        )
+        return (
+            f"위험 메커니즘\n{overview}\n\n"
+            f"즉시 점검 항목\n"
+            + "\n".join(f"- {i}" for i in items[:5]) + "\n\n"
+            f"정비 계획\n"
+            "이번 달 부하율이 높은 변압기를 우선 점검합니다. "
+            "154kV 이상 설비는 절연유 샘플링 및 DGA 분석을 예약합니다.\n\n"
+            f"기상 대응 조치\n"
+            "고온·고습 기간 중 순시 주기를 단축합니다. "
+            "P1 변전소에 예비 냉각 장치를 사전 배치합니다."
+        )
 
 # ── 사이드바 ──────────────────────────────────────────────────
 with st.sidebar:
