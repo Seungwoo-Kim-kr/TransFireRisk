@@ -170,12 +170,28 @@ The fundamental constraint is the **small positive sample** (81 fire events in 1
 - ✅ **Seasonal/regional trend** detection
 - ❌ Not a standalone fire-count prediction system
 
+### Granularity Constraint
+
+All predictions and inspection guidance operate at the **province (시도) × month** level — the finest granularity available in the current dataset. As a result, when the model identifies a high-risk region such as Seoul, the AI-generated inspection guide applies uniformly to all transformers within that province. It is not possible to identify which specific substation or individual transformer unit is at elevated risk.
+
+To enable facility-level risk prediction, the following data would need to be integrated:
+
+| Data Type | Description | Expected Impact |
+|---|---|---|
+| Individual transformer registry | Equipment ID, location (lat/lon), voltage class, rated capacity, year of manufacture | Enable pinpointing specific high-risk units |
+| Maintenance and inspection history | Last inspection date, insulation test results, oil sample records, fault history | Improve IDA component accuracy at unit level |
+| Real-time load and temperature data | Per-transformer load factor, winding temperature measurements | Replace monthly weather aggregates with live operational data |
+| Substation topology | Grid connectivity, transformer roles (primary/secondary/tertiary) | Model cascading risk across interconnected facilities |
+
+With facility-level data, the risk model could evolve from a province-wide alert system into a **unit-specific predictive maintenance platform**, enabling prioritised dispatch of inspection teams to individual transformers rather than entire provinces.
+
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] Facility-level granularity (시·군·구 or individual transformer)
-- [ ] Extended history (2010–2024, 3× more events)
+- [ ] **Facility-level granularity** — integrate individual transformer registry and location data (see Granularity Constraint above)
+- [ ] **Real-time operational data** — per-unit load factor and winding temperature feeds
+- [ ] Extended history (2010–2024, 3× more fire events for model training)
 - [ ] SHAP explainability per prediction
 - [ ] Email / Slack alerts for P1 regions
 - [ ] Auto-generated monthly PDF report
