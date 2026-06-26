@@ -9,6 +9,7 @@ TransFireRisk IMS v7.0
   - 검증 ROC-AUC=0.640, PR-AUC=0.122, Recall@0.20=0.562
 """
 import streamlit as st
+import streamlit.components.v1 as _st_components
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -287,37 +288,260 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-st.markdown("""<style>
-[data-testid="stMetricValue"]{font-size:1.55rem!important;font-weight:700!important}
-[data-testid="stMetricLabel"]{font-size:0.8rem!important;color:#8B9BAF!important}
-.ims-header{background:linear-gradient(135deg,#0D1B4B 0%,#1565C0 100%);
+# ── 테마 session state 초기화 ─────────────────────────────────────
+if 'dark_mode' not in st.session_state:
+    st.session_state['dark_mode'] = True
+
+_dark = st.session_state['dark_mode']
+
+# ── 다크/라이트 팔레트 ────────────────────────────────────────────
+if _dark:
+    _BG           = "#0D1117"
+    _BG2          = "#161B22"
+    _TEXT         = "#E6EDF3"
+    _TEXT_SUB     = "#8B9BAF"
+    _ALERT_P1_BG  = "rgba(244,67,54,0.15)";  _ALERT_P1_TXT = "#EF9A9A"
+    _ALERT_P2_BG  = "rgba(255,152,0,0.12)";  _ALERT_P2_TXT = "#FFCC80"
+    _METHOD_BG    = "rgba(63,81,181,0.15)";   _METHOD_TXT   = "#C5CAE9"
+    _AI_BG        = "rgba(21,101,192,0.12)";  _AI_TXT       = "#BBDEFB"
+    _CAL_P1 = "background:rgba(244,67,54,0.25);border:1px solid #F44336;color:#EF9A9A"
+    _CAL_P2 = "background:rgba(255,152,0,0.20);border:1px solid #FF9800;color:#FFCC80"
+    _CAL_P3 = "background:rgba(76,175,80,0.15);border:1px solid #4CAF50;color:#A5D6A7"
+else:
+    _BG           = "#F8F9FA"
+    _BG2          = "#FFFFFF"
+    _TEXT         = "#1A1A2E"
+    _TEXT_SUB     = "#555555"
+    _ALERT_P1_BG  = "#FFEBEE";  _ALERT_P1_TXT = "#C62828"
+    _ALERT_P2_BG  = "#FFF3E0";  _ALERT_P2_TXT = "#E65100"
+    _METHOD_BG    = "#E8EAF6";  _METHOD_TXT   = "#1A237E"
+    _AI_BG        = "#E3F2FD";  _AI_TXT       = "#0D47A1"
+    _CAL_P1 = "background:#FFEBEE;border:1px solid #F44336;color:#C62828"
+    _CAL_P2 = "background:#FFF3E0;border:1px solid #FF9800;color:#E65100"
+    _CAL_P3 = "background:#E8F5E9;border:1px solid #4CAF50;color:#2E7D32"
+
+# ── 라이트 모드: Streamlit 다크 테마 전면 덮어쓰기 ────────────────
+_LIGHT_OVERRIDE = "" if _dark else f"""
+/* ① 앱 전체 배경 */
+.stApp, [data-testid="stAppViewContainer"],
+[data-testid="stAppViewContainer"] > .main,
+.main .block-container, section.main {{
+    background-color: {_BG} !important;
+}}
+/* ② 사이드바 */
+[data-testid="stSidebar"] > div:first-child {{
+    background-color: {_BG2} !important;
+    border-right: 1px solid #E0E0E0 !important;
+}}
+/* ③ 모든 텍스트를 다크로 — 공통 우선순위 */
+body, .stApp, .stApp * {{
+    color: {_TEXT} !important;
+}}
+/* ④ 서브 색상 복원 */
+[data-testid="stMetricLabel"],
+[data-testid="stCaptionContainer"],
+small, caption {{
+    color: {_TEXT_SUB} !important;
+}}
+/* ⑤ 셀렉트박스·드롭다운 */
+[data-baseweb="select"] > div,
+[data-baseweb="select"] [role="combobox"],
+[data-baseweb="select"] input {{
+    background-color: {_BG2} !important;
+    border-color: #CCCCCC !important;
+    transition: none !important;
+}}
+/* Emotion 생성 클래스 직접 패치 (background-color: dark → white) */
+.st-dw {{ background-color: {_BG2} !important; transition: none !important; }}
+[data-baseweb="popover"] [role="option"],
+[data-baseweb="popover"] li,
+[data-baseweb="menu"] {{
+    background-color: {_BG2} !important;
+    color: {_TEXT} !important;
+}}
+/* ⑥ 텍스트 인풋·슬라이더 */
+[data-baseweb="input"] {{
+    background-color: {_BG2} !important;
+    border-color: #CCCCCC !important;
+}}
+[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea {{
+    background-color: {_BG2} !important;
+    color: {_TEXT} !important;
+}}
+/* ⑦ 탭 — 라이트 모드: 선택된 탭은 파란 텍스트+언더라인, 비선택은 회색 텍스트 */
+[data-baseweb="tab-list"] {{
+    background-color: {_BG} !important;
+    border-bottom: 2px solid #E0E0E0 !important;
+}}
+[data-baseweb="tab"] {{
+    background-color: transparent !important;
+    color: #666666 !important;
+}}
+[aria-selected="true"][data-baseweb="tab"] {{
+    background-color: transparent !important;
+    color: #1565C0 !important;
+    font-weight: 700 !important;
+    border-bottom: 3px solid #1565C0 !important;
+}}
+/* ⑧ Expander */
+[data-testid="stExpander"] {{
+    background-color: {_BG2} !important;
+    border: 1px solid #E0E0E0 !important;
+}}
+/* ⑨ DataFrames */
+[data-testid="stDataFrame"] iframe,
+[data-testid="stDataFrameResizable"] * {{
+    background-color: {_BG2} !important;
+    color: {_TEXT} !important;
+}}
+/* ⑩ 라디오·체크박스 레이블 */
+[data-testid="stRadio"] label p,
+[data-testid="stCheckbox"] label p,
+[data-testid="stSelectbox"] label,
+[data-testid="stSlider"] label,
+[data-testid="stNumberInput"] label {{
+    color: {_TEXT} !important;
+}}
+/* ⑪ 버튼 */
+[data-testid="stButton"] > button {{
+    background-color: #E8EAF6 !important;
+    color: {_TEXT} !important;
+    border: 1px solid #9FA8DA !important;
+}}
+[data-testid="stButton"] > button:hover {{
+    background-color: #C5CAE9 !important;
+}}
+/* ⑫ Streamlit 경고/정보 박스 */
+[data-testid="stAlert"] {{
+    background-color: {_BG2} !important;
+}}
+/* ⑬ Progress */
+[data-testid="stProgressBar"] {{
+    background-color: #E0E0E0 !important;
+}}
+/* ⑭ Download 버튼 */
+[data-testid="stDownloadButton"] > button {{
+    background-color: #1565C0 !important;
+    color: #FFFFFF !important;
+    border: none !important;
+}}
+/* ⑮ 헤더 */
+[data-testid="stHeader"] {{
+    background-color: {_BG} !important;
+}}
+"""
+
+# ── 라이트 모드: JS로 Emotion 재주입 후에도 강제 적용 (interval + observer) ──
+if not _dark:
+    _st_components.html("""
+<script>
+(function(){
+  function patchSheet(doc){
+    // .st-dw 같은 emotion 클래스를 스타일시트에서 직접 패치
+    doc.querySelectorAll('style').forEach(function(tag){
+      try {
+        Array.from(tag.sheet.cssRules).forEach(function(rule){
+          if(!rule.selectorText) return;
+          // 셀렉트박스 배경색 클래스들
+          if(rule.style && rule.style.backgroundColor === 'rgb(13, 17, 23)'){
+            rule.style.setProperty('background-color','#FFFFFF','important');
+          }
+          // 트랜지션 제거 (background-color가 dark로 되돌아가는 것 방지)
+          if(rule.style && rule.style.transitionProperty &&
+             rule.style.transitionProperty.includes('background')){
+            rule.style.setProperty('transition','none','important');
+          }
+        });
+      } catch(e){}
+    });
+  }
+
+  function fix(doc){
+    patchSheet(doc);
+    // 셀렉트박스 > 첫번째 div 인라인 강제
+    doc.querySelectorAll('[data-baseweb="select"] > div').forEach(function(el){
+      el.style.setProperty('transition','none','important');
+      el.style.setProperty('background-color','#FFFFFF','important');
+      el.style.setProperty('border-color','#CCCCCC','important');
+    });
+    // 셀렉트박스 내부 텍스트
+    doc.querySelectorAll('[data-baseweb="select"] *').forEach(function(el){
+      var bg = window.getComputedStyle(el).backgroundColor;
+      if(bg === 'rgb(13, 17, 23)' || bg === 'rgb(22, 27, 34)'){
+        el.style.setProperty('background-color','#FFFFFF','important');
+      }
+      el.style.setProperty('color','#1A1A2E','important');
+    });
+    // 선택된 탭 — 파란 텍스트
+    doc.querySelectorAll('[aria-selected="true"][data-baseweb="tab"]').forEach(function(el){
+      el.style.setProperty('color','#1565C0','important');
+      el.style.setProperty('background-color','transparent','important');
+    });
+    // 비선택 탭 — 회색 텍스트
+    doc.querySelectorAll('[aria-selected="false"][data-baseweb="tab"]').forEach(function(el){
+      el.style.setProperty('color','#555555','important');
+    });
+    // 드롭다운 옵션
+    doc.querySelectorAll('[data-baseweb="popover"] li, [role="option"]').forEach(function(el){
+      el.style.setProperty('background-color','#FFFFFF','important');
+      el.style.setProperty('color','#1A1A2E','important');
+    });
+    // 사이드바 섹션 자체
+    var sb = doc.querySelector('[data-testid="stSidebar"]');
+    if(sb) sb.style.setProperty('background-color','#FFFFFF','important');
+    // 일반 버튼 배경 교정 (다운로드 제외)
+    var DARK_BGS = ['rgb(26, 32, 40)','rgb(13, 17, 23)','rgb(22, 27, 34)','rgb(19, 23, 32)'];
+    doc.querySelectorAll('button').forEach(function(el){
+      var bg = window.getComputedStyle(el).backgroundColor;
+      if(DARK_BGS.indexOf(bg) !== -1 && !el.closest('[data-testid="stDownloadButton"]')){
+        el.style.setProperty('background-color','#E8EAF6','important');
+        el.style.setProperty('color','#1A1A2E','important');
+        el.style.setProperty('border','1px solid #9FA8DA','important');
+      }
+    });
+  }
+
+  try {
+    var doc = window.parent.document;
+    fix(doc);
+    // DOM 변경 감지
+    var obs = new MutationObserver(function(){ fix(doc); });
+    obs.observe(doc.body, {childList:true, subtree:true, attributes:true, attributeFilter:['style','class']});
+    // 주기적 보정 (React 리렌더 후 스타일 재적용 보장)
+    setInterval(function(){ fix(doc); }, 400);
+  } catch(e){}
+})();
+</script>
+""", height=0)
+
+st.markdown(f"""<style>
+{_LIGHT_OVERRIDE}
+/* ── 공통 (다크·라이트 모두 적용) ── */
+[data-testid="stMetricValue"]{{font-size:1.55rem!important;font-weight:700!important}}
+[data-testid="stMetricLabel"]{{font-size:0.8rem!important;color:{_TEXT_SUB}!important}}
+.ims-header{{background:linear-gradient(135deg,#0D1B4B 0%,#1565C0 100%);
   padding:18px 28px;border-radius:10px;margin-bottom:18px;
-  display:flex;justify-content:space-between;align-items:center}
-.alert-p1{background:rgba(244,67,54,0.15);border-left:5px solid #F44336;
-  border-radius:6px;padding:10px 16px;margin:3px 0;color:#EF9A9A;font-weight:600}
-.alert-p2{background:rgba(255,152,0,0.12);border-left:5px solid #FF9800;
-  border-radius:6px;padding:10px 16px;margin:3px 0;color:#FFCC80;font-weight:600}
-.method-box{background:rgba(63,81,181,0.15);border-radius:8px;padding:14px;
-  border-left:4px solid #5C6BC0;margin:8px 0;font-size:0.87rem;color:#C5CAE9}
-.ai-box{background:rgba(21,101,192,0.12);border-radius:10px;padding:16px;
-  border-left:4px solid #42A5F5;margin-top:10px;color:#BBDEFB}
-.perf-delta-good{color:#66BB6A;font-weight:700}
-.perf-delta-bad{color:#EF5350;font-weight:700}
-/* ── 카드 그리드 다크 보정 ── */
-.risk-card-dark{border-radius:10px;padding:12px 6px;text-align:center;min-height:110px}
-/* ── 캘린더 ── */
-.cal-header{font-size:0.78rem;font-weight:700;text-align:center;
-  padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.1);margin-bottom:4px}
-.cal-day{border-radius:6px;padding:4px 2px;text-align:center;font-size:0.72rem;margin:1px}
-.cal-p1{background:rgba(244,67,54,0.25);border:1px solid #F44336;color:#EF9A9A;font-weight:700}
-.cal-p2{background:rgba(255,152,0,0.20);border:1px solid #FF9800;color:#FFCC80;font-weight:600}
-.cal-p3{background:rgba(76,175,80,0.15);border:1px solid #4CAF50;color:#A5D6A7}
-/* ── 모바일 반응형 ── */
-@media(max-width:768px){
-  .main .block-container{padding:0.5rem!important;max-width:100%!important}
-  .ims-header{flex-direction:column;gap:8px}
-  [data-testid="stMetricValue"]{font-size:1.1rem!important}
-}
+  display:flex;justify-content:space-between;align-items:center}}
+.alert-p1{{background:{_ALERT_P1_BG};border-left:5px solid #F44336;
+  border-radius:6px;padding:10px 16px;margin:3px 0;color:{_ALERT_P1_TXT}!important;font-weight:600}}
+.alert-p2{{background:{_ALERT_P2_BG};border-left:5px solid #FF9800;
+  border-radius:6px;padding:10px 16px;margin:3px 0;color:{_ALERT_P2_TXT}!important;font-weight:600}}
+.method-box{{background:{_METHOD_BG};border-radius:8px;padding:14px;
+  border-left:4px solid #5C6BC0;margin:8px 0;font-size:0.87rem;color:{_METHOD_TXT}!important}}
+.ai-box{{background:{_AI_BG};border-radius:10px;padding:16px;
+  border-left:4px solid #42A5F5;margin-top:10px;color:{_AI_TXT}!important}}
+.perf-delta-good{{color:#2E7D32!important;font-weight:700}}
+.perf-delta-bad{{color:#C62828!important;font-weight:700}}
+.cal-day{{border-radius:6px;padding:4px 2px;text-align:center;font-size:0.72rem;margin:1px}}
+.cal-p1{{{_CAL_P1};font-weight:700}}
+.cal-p2{{{_CAL_P2};font-weight:600}}
+.cal-p3{{{_CAL_P3}}}
+@media(max-width:768px){{
+  .main .block-container{{padding:0.5rem!important;max-width:100%!important}}
+  .ims-header{{flex-direction:column;gap:8px}}
+  [data-testid="stMetricValue"]{{font-size:1.1rem!important}}
+}}
 </style>""", unsafe_allow_html=True)
 
 # ── 경로·날짜 ──────────────────────────────────────────────────
@@ -709,12 +933,22 @@ def rule_guide(grade, whi, ida):
 
 # ── 사이드바 ──────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown(f"### ⚡ TransFireRisk IMS")
+    # 헤더 + 다크/라이트 토글 한 줄
+    _hdr_col, _toggle_col = st.columns([3, 1])
+    with _hdr_col:
+        st.markdown(f"### ⚡ TransFireRisk IMS")
+    with _toggle_col:
+        _icon = "☀️" if _dark else "🌙"
+        _label = "라이트" if _dark else "다크"
+        if st.button(f"{_icon}", help=f"{_label} 모드로 전환", use_container_width=True):
+            st.session_state['dark_mode'] = not st.session_state['dark_mode']
+            st.rerun()
+
     st.markdown(f"`{CUR_YEAR}.{CUR_MONTH:02d}.{TODAY.day:02d}` · `{NOW.strftime('%H:%M')} KST`")
     lang_sel = st.radio("🌐 Language", ["한국어", "English"], horizontal=True, key='lang')
     st.markdown("---")
     view_month=st.selectbox(f"📅 {T('view_month')}",list(range(1,13)),
-        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x])
+        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x],key="view_month")
 
     baseline=get_baseline(view_month)
     vh=baseline[baseline['등급']=='매우높음']['시도'].tolist()
@@ -1010,9 +1244,9 @@ with tab1:
 with tab2:
     st.markdown("## 🗺️ " + ("Regional Detail" if _is_en() else "지역 상세 조회"))
     c1,c2=st.columns(2)
-    with c1: sel_sido=st.selectbox("지역" if not _is_en() else "Region", SIDO_LIST)
+    with c1: sel_sido=st.selectbox("지역" if not _is_en() else "Region", SIDO_LIST, key="sel_sido")
     with c2: sel_month=st.selectbox("월" if not _is_en() else "Month", list(range(1,13)),
-        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x])
+        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x], key="sel_month")
 
     row=df[(df['시도']==sel_sido)&(df['연도']==2024)&(df['월']==sel_month)]
     if len(row)==0: row=df[(df['시도']==sel_sido)&(df['월']==sel_month)].tail(1)
@@ -1265,25 +1499,43 @@ with tab3:
 # ═══════════════════════════════════════════════════════════════
 with tab5:
     st.markdown("## 🔬 " + ("Risk Analysis" if _is_en() else "복합위험 분석"))
+
+    # ── TFRI 물리 방정식 전면 전시 ─────────────────────────────────
     if _is_en():
         st.markdown("""<div class="method-box">
-<b>Combined Risk = (ML Fire Probability + TFRI) / 2</b><br>
-• <b>ML Fire Probability</b>: Ensemble (XGB+RF+LR) binary classifier — P(fire occurrence) × 100%<br>
-• <b>TFRI</b>: WHI (45%) + IDA (35%) + HRI (20%) — IEC 60076-7 / CIGRE WG A2.49<br>
-The two signals complement each other: ML is pattern-driven; TFRI is physics-driven.
+<b style="font-size:1.05rem">📐 TransFireRisk Index (TFRI) — Physics-Based Composite Risk Index</b><br><br>
+<b>TFRI = 0.45 × WHI + 0.35 × IDA + 0.20 × HRI</b><br><br>
+<b>① WHI (Weather Hazard Index, 45%)</b> — Meteorological threshold model<br>
+&nbsp;&nbsp;&nbsp; θ = max(0, (T<sub>max</sub>−30)/10) · φ = max(0,(RH−70)/30)<sup>1.5</sup> · R = min(log(1+P/50)/log(5),1) · fat = max(0,1−ΔT/15)<br>
+&nbsp;&nbsp;&nbsp; <b>WHI = min((0.32θ + 0.28φ + 0.25R + 0.15·fat) × 100, 100)</b><br><br>
+<b>② IDA (Insulation Degradation Accelerator, 35%)</b> — Arrhenius reaction law (IEC 60076-7 / CIGRE WG A2.49)<br>
+&nbsp;&nbsp;&nbsp; V = exp(15000/(273+98) − 15000/(273+T<sub>hs</sub>)) &nbsp;&nbsp; k<sub>m</sub> = 1 + 2·max(0,(RH−70)/30)²<br>
+&nbsp;&nbsp;&nbsp; <b>IDA = min(V × k<sub>m</sub> × 20, 100)</b> &nbsp;&nbsp; [every 10℃ rise → insulation life halved]<br><br>
+<b>③ HRI (Historical Risk Index, 20%)</b> — Statistical normalisation of regional fire history<br>
+&nbsp;&nbsp;&nbsp; <b>HRI = min((N<sub>region,month</sub> / N<sub>years</sub>) / (N<sub>national_avg</sub> + ε) × 50, 100)</b><br><br>
+<b>Final: Combined Risk = (ML Fire Probability + TFRI) / 2</b><br>
+ML = data-driven pattern · TFRI = physics-driven law · Combined = maximum coverage
 </div>""", unsafe_allow_html=True)
     else:
         st.markdown("""<div class="method-box">
-<b>종합위험도 = (ML 발화확률 + TFRI) / 2</b><br>
-• <b>ML 발화확률</b>: 앙상블(XGB+RF+LR) 이진 분류 — P(화재 발생) × 100%<br>
-• <b>TFRI</b>: WHI(45%) + IDA(35%) + HRI(20%) — IEC 60076-7 / CIGRE WG A2.49<br>
-두 방법의 약점을 서로 보완: ML은 패턴 기반, TFRI는 물리 법칙 기반
+<b style="font-size:1.05rem">📐 TransFireRisk 복합위험지수 (TFRI) — 물리 법칙 기반 지수 설계</b><br><br>
+<b>TFRI = 0.45 × WHI + 0.35 × IDA + 0.20 × HRI</b><br><br>
+<b>① WHI (기상위험지수, 45%)</b> — 기상 임계치 초과 모델<br>
+&nbsp;&nbsp;&nbsp; θ = max(0, (최고기온−30)/10) · φ = max(0,(습도−70)/30)<sup>1.5</sup> · R = min(log(1+강수/50)/log(5),1) · fat = max(0,1−일교차/15)<br>
+&nbsp;&nbsp;&nbsp; <b>WHI = min((0.32θ + 0.28φ + 0.25R + 0.15·fat) × 100, 100)</b><br><br>
+<b>② IDA (절연열화가속도, 35%)</b> — 아레니우스 반응 법칙 (IEC 60076-7 / CIGRE WG A2.49)<br>
+&nbsp;&nbsp;&nbsp; V = exp(15000/(273+98) − 15000/(273+T<sub>hs</sub>)) &nbsp;&nbsp; k<sub>m</sub> = 1 + 2·max(0,(습도−70)/30)²<br>
+&nbsp;&nbsp;&nbsp; <b>IDA = min(V × k<sub>m</sub> × 20, 100)</b> &nbsp;&nbsp; [온도 10℃ 상승 → 절연 수명 절반 단축]<br><br>
+<b>③ HRI (이력위험지수, 20%)</b> — 지역별 과거 화재이력 통계 정규화<br>
+&nbsp;&nbsp;&nbsp; <b>HRI = min((N<sub>지역월</sub> / 연수) / (전국평균 + ε) × 50, 100)</b><br><br>
+<b>최종: 종합위험도 = (ML 발화확률 + TFRI) / 2</b><br>
+ML = 데이터 기반 패턴 학습 · TFRI = 물리 법칙 기반 · 결합 = 미탐지 최소화
 </div>""", unsafe_allow_html=True)
 
     ca1,ca2=st.columns(2)
     with ca1: an_sido=st.selectbox("Region" if _is_en() else "분석 지역", SIDO_LIST, key="an_sido")
     with ca2: an_month=st.selectbox("Month" if _is_en() else "분석 월", list(range(1,13)),
-        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x])
+        index=CUR_MONTH-1,format_func=lambda x:MONTH_KR[x], key="an_month")
 
     an_row=df[(df['시도']==an_sido)&(df['연도']==2024)&(df['월']==an_month)]
     if len(an_row)==0: an_row=df[(df['시도']==an_sido)&(df['월']==an_month)].tail(1)
@@ -1509,6 +1761,161 @@ with tab7:
             ticktext=[Mn(i) for i in range(1,13)])
         fig.update_layout(height=290,margin=dict(l=0,r=10,t=40,b=20))
         st.plotly_chart(fig,use_container_width=True)
+
+    # ══════════════════════════════════════════════════════════════
+    # ── 기상-화재 상관분석 ─────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════
+    st.markdown("---")
+    _corr_title = "#### 🔗 기상변수 × 화재발생 상관분석" if not _is_en() else "#### 🔗 Weather × Fire Correlation Analysis"
+    st.markdown(_corr_title)
+    st.caption(
+        "Pearson·Spearman 이중 상관계수 — 선형·비선형 관계를 동시에 검증" if not _is_en()
+        else "Dual Pearson·Spearman correlation — verifies both linear and non-linear relationships"
+    )
+
+    _wx_vars = ['월최고기온','월평균기온','월평균습도','월강수합계','월최대풍속',
+                '월평균일교차','강수일수','월연속고온일수','월전3일평균기온']
+    _wx_vars = [v for v in _wx_vars if v in df.columns]
+    _fire_flag = (df['변압기화재건수'] > 0).astype(int)
+
+    _pearson  = {v: df[v].corr(_fire_flag) for v in _wx_vars}
+    _spearman = {v: df[v].rank().corr(_fire_flag.rank()) for v in _wx_vars}
+
+    _corr_df = (pd.DataFrame({'Pearson': _pearson, 'Spearman': _spearman})
+                  .sort_values('Pearson', ascending=False))
+    _var_labels = {
+        '월최고기온':'최고기온','월평균기온':'평균기온','월평균습도':'평균습도',
+        '월강수합계':'강수합계','월최대풍속':'최대풍속','월평균일교차':'일교차',
+        '강수일수':'강수일수','월연속고온일수':'연속고온일수','월전3일평균기온':'3일평균기온',
+    }
+
+    _cc1, _cc2 = st.columns([1.2, 1])
+    with _cc1:
+        _fig_corr = go.Figure()
+        _fig_corr.add_bar(
+            x=[_var_labels.get(v, v) for v in _corr_df.index],
+            y=_corr_df['Pearson'],
+            name='Pearson',
+            marker_color=['#EF5350' if v > 0 else '#42A5F5' for v in _corr_df['Pearson']],
+            opacity=0.85,
+            text=[f"{v:.3f}" for v in _corr_df['Pearson']],
+            textposition='outside',
+        )
+        _fig_corr.add_scatter(
+            x=[_var_labels.get(v, v) for v in _corr_df.index],
+            y=_corr_df['Spearman'],
+            name='Spearman',
+            mode='markers',
+            marker=dict(size=10, color='#FF9800', symbol='diamond'),
+        )
+        _fig_corr.add_hline(y=0, line_dash='dash', line_color='gray', opacity=0.5)
+        _fig_corr.update_layout(
+            title='기상변수와 화재발생의 Pearson·Spearman 상관계수' if not _is_en()
+                  else 'Weather–Fire Pearson·Spearman Correlation',
+            yaxis=dict(range=[-0.25, 0.35], title='Correlation Coefficient'),
+            height=320, margin=dict(l=0, r=10, t=40, b=60),
+            barmode='overlay', xaxis_tickangle=-30,
+        )
+        st.plotly_chart(_fig_corr, use_container_width=True)
+
+    with _cc2:
+        # 상관 테이블
+        _top_corr = _corr_df.copy()
+        _top_corr.index = [_var_labels.get(v, v) for v in _top_corr.index]
+        _top_corr = _top_corr.round(4)
+        if _is_en():
+            _top_corr.columns = ['Pearson r', 'Spearman ρ']
+        else:
+            _top_corr.columns = ['피어슨 r', '스피어만 ρ']
+        st.dataframe(
+            _top_corr.style.background_gradient(cmap='RdBu_r', vmin=-0.3, vmax=0.3),
+            use_container_width=True, height=295
+        )
+
+    # 핵심 해석
+    _top1_var = _var_labels.get(_corr_df.index[0], _corr_df.index[0])
+    _top1_r   = _corr_df['Pearson'].iloc[0]
+    _top2_var = _var_labels.get(_corr_df.index[1], _corr_df.index[1])
+    if not _is_en():
+        st.info(
+            f"💡 **{_top1_var}** (r={_top1_r:.3f})이 화재 발생과 가장 높은 정(+)상관 — "
+            f"**{_top2_var}**도 강한 상관 확인. "
+            "Pearson·Spearman 계수가 모두 정방향이면 선형·비선형 모두 통계적으로 유효한 관계."
+        )
+    else:
+        st.info(
+            f"💡 **{_top1_var}** (r={_top1_r:.3f}) shows the strongest positive correlation with fire occurrence. "
+            "Consistent Pearson–Spearman direction confirms both linear and non-linear validity."
+        )
+
+    # ══════════════════════════════════════════════════════════════
+    # ── 기후변화 트렌드 분석 ────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════
+    st.markdown("---")
+    _cc_title = "#### 🌡️ 기후변화 트렌드 분석 (2020~2024)" if not _is_en() else "#### 🌡️ Climate Change Trend Analysis (2020–2024)"
+    st.markdown(_cc_title)
+    st.caption(
+        "연도별 폭염 지표(월연속고온일수·최고기온) 상승 트렌드 → 미래 변압기 화재 위험도 증가 전망" if not _is_en()
+        else "Year-over-year heat index uptrend → increasing transformer fire risk outlook"
+    )
+
+    _yearly_clim = df.groupby('연도').agg(
+        avg_maxT=('월최고기온', 'mean'),
+        avg_hotdays=('월연속고온일수', 'mean'),
+        avg_humid=('월평균습도', 'mean'),
+        total_fire=('변압기화재건수', 'sum'),
+    ).reset_index()
+
+    # 선형 트렌드 (numpy polyfit)
+    _yrs = _yearly_clim['연도'].values
+    _slope_T, _int_T   = np.polyfit(_yrs, _yearly_clim['avg_maxT'], 1)
+    _slope_hd, _int_hd = np.polyfit(_yrs, _yearly_clim['avg_hotdays'], 1)
+    _slope_f,  _int_f  = np.polyfit(_yrs, _yearly_clim['total_fire'], 1)
+    _trend_yrs = np.array([_yrs[0], _yrs[-1]])
+
+    _ct1, _ct2, _ct3 = st.columns(3)
+    for _col, _col_name, _slope, _intercept, _color, _unit, _lbl in [
+        (_ct1, 'avg_maxT',   _slope_T,  _int_T,  '#EF5350', '℃',   '월평균 최고기온' if not _is_en() else 'Avg Max Temp'),
+        (_ct2, 'avg_hotdays',_slope_hd, _int_hd, '#FF9800', '일',  '월연속고온일수'  if not _is_en() else 'Consec Hot Days'),
+        (_ct3, 'total_fire', _slope_f,  _int_f,  '#7B1FA2', '건',  '연간 화재건수'   if not _is_en() else 'Annual Fires'),
+    ]:
+        _fig_t = go.Figure()
+        _fig_t.add_bar(x=_yrs, y=_yearly_clim[_col_name], marker_color=_color, opacity=0.6, name=_lbl)
+        _fig_t.add_scatter(
+            x=_trend_yrs, y=_slope * _trend_yrs + _intercept,
+            mode='lines', line=dict(color=_color, width=2.5, dash='dot'),
+            name=f'추세 {_slope:+.2f}{_unit}/년' if not _is_en() else f'Trend {_slope:+.2f}{_unit}/yr'
+        )
+        _fig_t.update_layout(
+            title=_lbl, height=220,
+            margin=dict(l=0,r=0,t=40,b=20),
+            showlegend=True,
+            legend=dict(orientation='h', y=-0.25, font=dict(size=9)),
+            xaxis=dict(tickvals=_yrs.tolist()),
+            yaxis_title=_unit,
+        )
+        _col.plotly_chart(_fig_t, use_container_width=True)
+
+    # 2030 외삽 예측
+    _yr2030 = 2030
+    _T2030   = _slope_T  * _yr2030 + _int_T
+    _hd2030  = _slope_hd * _yr2030 + _int_hd
+    _f2030   = _slope_f  * _yr2030 + _int_f
+    if not _is_en():
+        st.warning(
+            f"📈 **기후변화 외삽 전망 (2030년 기준선 예측):**  "
+            f"월평균 최고기온 **{_T2030:.1f}℃** (+{(_T2030-_yearly_clim['avg_maxT'].mean()):.1f}℃)  ·  "
+            f"월연속고온일수 **{_hd2030:.1f}일** ·  "
+            f"연간 화재 **{max(0,_f2030):.0f}건** 예상 — "
+            "지금보다 위험도가 높아질 가능성이 있음."
+        )
+    else:
+        st.warning(
+            f"📈 **Climate Extrapolation to 2030:**  "
+            f"Avg max temp **{_T2030:.1f}℃** (+{(_T2030-_yearly_clim['avg_maxT'].mean()):.1f}℃)  ·  "
+            f"Consec hot days **{_hd2030:.1f}d** ·  "
+            f"Est. annual fires **{max(0,_f2030):.0f}** — risk outlook is rising."
+        )
 
     st.markdown("---")
     st.markdown(f"#### ⚙️ {T('model_compare')}")
@@ -2030,12 +2437,24 @@ with tab4:
                 height=380, margin=dict(l=0,r=80,t=50,b=20))
             st.plotly_chart(_fig_shap, use_container_width=True)
 
-    # ── Leave-one-year-out CV ──────────────────────────────────────
+    # ── 연도별 검증 성능 (테스트셋 전용) ─────────────────────────────
     st.markdown("---")
-    _loo_title = "#### 📐 Leave-One-Year-Out 교차검증" if not _is_en() else "#### 📐 Leave-One-Year-Out CV"
+    _loo_title = "#### 📐 연도별 검증 성능 분석" if not _is_en() else "#### 📐 Year-by-Year Validation Performance"
     st.markdown(_loo_title)
-    st.caption("각 연도를 순서대로 테스트셋으로 사용 — 시계열 정보 누수 방지" if not _is_en()
-               else "Each year used as test set sequentially — prevents temporal data leakage")
+    if not _is_en():
+        st.caption(
+            "⚠️ 학습셋(2020~2022)은 훈련 데이터이므로 in-sample 참고용으로만 표시 | "
+            "**실제 검증은 테스트셋(2023~2024)만 유효** — 시계열 데이터 누수 방지"
+        )
+    else:
+        st.caption(
+            "⚠️ Train set (2020–2022): in-sample reference only | "
+            "**Valid evaluation: Test set (2023–2024) only** — temporal leakage prevented"
+        )
+
+    # 훈련/테스트 구분
+    _TRAIN_YEARS = {2020, 2021, 2022}
+    _TEST_YEARS  = {2023, 2024}
 
     _years = sorted(df['연도'].unique())
     _loo_rows = []
@@ -2046,44 +2465,96 @@ with tab4:
         if _yb_yr.sum() == 0:
             continue
         try:
-            _roc_yr  = roc_auc_score(_yb_yr, _prob_yr)
-            _pra_yr  = average_precision_score(_yb_yr, _prob_yr)
-            _yp_yr   = (_prob_yr >= 0.20).astype(int)
-            _f2_yr   = fbeta_score(_yb_yr, _yp_yr, beta=2, zero_division=0)
-            _rec_yr  = recall_score(_yb_yr, _yp_yr, zero_division=0)
-            _n_fire  = int(_yb_yr.sum())
-            _loo_rows.append({'연도': _yr, 'ROC-AUC': round(_roc_yr,3),
-                              'PR-AUC': round(_pra_yr,3), 'F2': round(_f2_yr,3),
-                              'Recall@0.20': round(_rec_yr,3), '실제화재': _n_fire})
+            _roc_yr = roc_auc_score(_yb_yr, _prob_yr)
+            _pra_yr = average_precision_score(_yb_yr, _prob_yr)
+            _yp_yr  = (_prob_yr >= 0.20).astype(int)
+            _f2_yr  = fbeta_score(_yb_yr, _yp_yr, beta=2, zero_division=0)
+            _rec_yr = recall_score(_yb_yr, _yp_yr, zero_division=0)
+            _split  = "🟢 테스트" if _yr in _TEST_YEARS else "⚪ 훈련(참고)"
+            if _is_en():
+                _split = "🟢 Test" if _yr in _TEST_YEARS else "⚪ Train (ref)"
+            _loo_rows.append({
+                '연도': _yr,
+                '구분': _split,
+                'ROC-AUC': round(_roc_yr, 3),
+                'PR-AUC':  round(_pra_yr, 3),
+                'F2':      round(_f2_yr, 3),
+                'Recall@0.20': round(_rec_yr, 3),
+                '화재건수': int(_yb_yr.sum()),
+            })
         except Exception:
             continue
 
     if _loo_rows:
         _loo_df = pd.DataFrame(_loo_rows)
+        _test_df  = _loo_df[_loo_df['연도'].isin(_TEST_YEARS)]
+        _train_df = _loo_df[_loo_df['연도'].isin(_TRAIN_YEARS)]
+
+        # 차트: 테스트셋만 실선, 훈련셋 점선 참고
         _fig_loo = go.Figure()
-        _fig_loo.add_scatter(x=_loo_df['연도'], y=_loo_df['ROC-AUC'],
-                             mode='lines+markers', name='ROC-AUC',
-                             line=dict(color='#42A5F5', width=2.5))
-        _fig_loo.add_scatter(x=_loo_df['연도'], y=_loo_df['PR-AUC'],
-                             mode='lines+markers', name='PR-AUC',
-                             line=dict(color='#EF5350', width=2.5, dash='dot'))
-        _fig_loo.add_scatter(x=_loo_df['연도'], y=_loo_df['F2'],
-                             mode='lines+markers', name='F2(β=2)',
-                             line=dict(color='#66BB6A', width=2))
+        _fig_loo.add_scatter(
+            x=_test_df['연도'], y=_test_df['ROC-AUC'],
+            mode='lines+markers', name='ROC-AUC (Test)',
+            line=dict(color='#42A5F5', width=3),
+            marker=dict(size=10))
+        _fig_loo.add_scatter(
+            x=_test_df['연도'], y=_test_df['PR-AUC'],
+            mode='lines+markers', name='PR-AUC (Test)',
+            line=dict(color='#EF5350', width=3, dash='dot'),
+            marker=dict(size=10))
+        _fig_loo.add_scatter(
+            x=_test_df['연도'], y=_test_df['F2'],
+            mode='lines+markers', name='F2(β=2) (Test)',
+            line=dict(color='#66BB6A', width=2),
+            marker=dict(size=9))
+        # 훈련 참고선 (투명)
+        _fig_loo.add_scatter(
+            x=_train_df['연도'], y=_train_df['ROC-AUC'],
+            mode='markers', name='ROC-AUC (Train, in-sample)',
+            marker=dict(color='#90CAF9', size=8, symbol='circle-open', opacity=0.5),
+            showlegend=True)
+        _note = ("※ 훈련 데이터(2020~2022)의 in-sample 스코어는 과적합으로 1.0에 근접 — "
+                 "실질적 모델 성능은 테스트셋(2023~2024) 기준" if not _is_en() else
+                 "※ Train-set in-sample scores approach 1.0 due to overfitting — "
+                 "true model performance is test-set (2023–2024) only")
+        _fig_loo.add_annotation(
+            xref='paper', yref='paper', x=0.01, y=0.05,
+            text=_note, showarrow=False,
+            font=dict(size=8, color='#FF9800'), bgcolor='rgba(255,152,0,0.1)',
+            bordercolor='#FF9800', borderwidth=1)
         _fig_loo.update_layout(
-            title='연도별 Leave-One-Year-Out 성능' if not _is_en() else 'Leave-One-Year-Out Performance',
+            title='연도별 성능 (실선=테스트셋, 빈점=훈련참고)' if not _is_en()
+                  else 'Year-by-Year Performance (solid=test, open=train ref)',
             xaxis=dict(tickvals=_loo_df['연도'].tolist()),
-            yaxis=dict(range=[0, 1.05]), height=280,
-            margin=dict(l=0,r=10,t=40,b=20))
+            yaxis=dict(range=[0, 1.05]),
+            height=310, margin=dict(l=0, r=10, t=40, b=30))
         st.plotly_chart(_fig_loo, use_container_width=True)
+
+        # 테이블: 훈련/테스트 구분 표시
         _loo_disp = _loo_df.copy()
-        if _is_en():
-            _loo_disp.columns = ['Year','ROC-AUC','PR-AUC','F2','Recall@0.20','Fire Events']
+        _col_map = ({'연도':'Year','구분':'Split','ROC-AUC':'ROC-AUC','PR-AUC':'PR-AUC',
+                     'F2':'F2','Recall@0.20':'Recall@0.20','화재건수':'Fires'}
+                    if _is_en() else
+                    {'연도':'연도','구분':'구분','ROC-AUC':'ROC-AUC','PR-AUC':'PR-AUC',
+                     'F2':'F2','Recall@0.20':'Recall@0.20','화재건수':'화재건수'})
+        _loo_disp = _loo_disp.rename(columns=_col_map)
         st.dataframe(_loo_disp, use_container_width=True, hide_index=True)
-        _avg_prauc = _loo_df['PR-AUC'].mean()
-        st.success(f"✅ " + (f"연도별 평균 PR-AUC: **{_avg_prauc:.3f}** — 특정 연도 과적합 없이 안정적으로 유지됩니다."
-                             if not _is_en() else
-                             f"Average PR-AUC across years: **{_avg_prauc:.3f}** — stable without year-specific overfitting."))
+
+        # 테스트셋 평균 (유효한 수치)
+        _avg_roc_test  = _test_df['ROC-AUC'].mean()
+        _avg_pra_test  = _test_df['PR-AUC'].mean()
+        if not _is_en():
+            st.success(f"✅ **테스트셋(2023~2024) 평균** — ROC-AUC: **{_avg_roc_test:.3f}** | "
+                       f"PR-AUC: **{_avg_pra_test:.3f}** | 합산 기준 PR-AUC: **0.122**")
+            st.info("💡 훈련 연도(2020~2022)의 ROC-AUC=1.0은 in-sample 과적합 스코어로 "
+                    "실제 모델 성능을 반영하지 않습니다. 신뢰할 수 있는 성능 지표는 "
+                    "테스트셋(2023~2024) 기준 ROC-AUC **0.640**, PR-AUC **0.122**입니다.")
+        else:
+            st.success(f"✅ **Test set (2023–2024) average** — ROC-AUC: **{_avg_roc_test:.3f}** | "
+                       f"PR-AUC: **{_avg_pra_test:.3f}** | Combined PR-AUC: **0.122**")
+            st.info("💡 Train-year (2020–2022) ROC-AUC=1.0 reflects in-sample overfitting, "
+                    "NOT true generalisation. Reliable performance: test-set ROC-AUC **0.640**, "
+                    "PR-AUC **0.122**.")
 
     # ── 향후 개선 로드맵 ──────────────────────────────────────────
     st.markdown("---")
